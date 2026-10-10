@@ -83,7 +83,10 @@ object Cub {
     val Panel = Color(0xFF232323)
     val Card = Color(0xFF1B1B1B)
     val Hover = Color(0xFF2A2A2A)
-    val Accent = Color(0xFF3B82F6)
+    /** The app's blue. [Accent] is this, or the playing song's cover colour when that option is on. */
+    val AccentDefault = Color(0xFF3B82F6)
+    var accentNow by mutableStateOf(AccentDefault)
+    val Accent: Color get() = accentNow
     val Text = Color(0xFFF2F2F2)
     val Muted = Color(0xFF8C8C8C)
     val Button = Color(0xFF3A3A3A)

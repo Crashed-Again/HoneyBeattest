@@ -51,4 +51,7 @@ class Settings(p: SharedPreferences) {
     val every = IntPref(p, "watch_every", 5)
     val quality = StrPref(p, "cave_quality", "mp3")
     val sort = StrPref(p, "lib_sort", "title")
+    /** false = A to Z / oldest first, true = Z to A / newest first. */
+    val sortDesc = BoolPref(p, "lib_sort_desc", false)
+    val coverAccent = BoolPref(p, "accent_from_cover", true)
 }

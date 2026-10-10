@@ -55,6 +55,7 @@ object CaveState {
     var updating by mutableStateOf(false)
     var updateMsg by mutableStateOf("")
     var signedIn by mutableStateOf(false)
+    var ytName by mutableStateOf("")
     var promptShown by mutableStateOf(false)
     var recents by mutableStateOf<List<Recent>>(emptyList())
     val log = mutableStateListOf<String>()
@@ -119,7 +120,64 @@ object YtAuth {
         return true
     }
 
+    private fun prefs(ctx: Context) = ctx.getSharedPreferences("honeybeat", Context.MODE_PRIVATE)
+
+    fun savedName(ctx: Context): String = prefs(ctx).getString("yt_name", "") ?: ""
+
+    /**
+     * Looks up the account name in the background (best effort, YouTube can refuse it) and shows it in Options.
+     * Asks YouTube's own account menu, signing the request with the SAPISID cookie the way the website does.
+     */
+    fun refreshName(ctx: Context) {
+        val app = ctx.applicationContext
+        Thread {
+            val name = fetchName(app)
+            if (!name.isNullOrBlank()) {
+                prefs(app).edit().putString("yt_name", name).apply()
+                CaveState.ui { CaveState.ytName = name }
+            }
+        }.start()
+    }
+
+    private fun fetchName(ctx: Context): String? {
+        try {
+            val rows = file(ctx).takeIf { it.exists() }?.readLines().orEmpty()
+                .filter { !it.startsWith("#") }.map { it.split("\t") }.filter { it.size >= 7 && it[0] == ".youtube.com" }
+            val sapisid = (rows.firstOrNull { it[5] == "SAPISID" } ?: rows.firstOrNull { it[5] == "__Secure-3PAPISID" })?.get(6)
+                ?: return null
+            val cookie = rows.joinToString("; ") { "${it[5]}=${it[6]}" }
+            val origin = "https://www.youtube.com"
+            val ts = System.currentTimeMillis() / 1000
+            val hash = java.security.MessageDigest.getInstance("SHA-1")
+                .digest("$ts $sapisid $origin".toByteArray()).joinToString("") { "%02x".format(it) }
+            val c = URL("$origin/youtubei/v1/account/account_menu?prettyPrint=false").openConnection() as HttpURLConnection
+            c.requestMethod = "POST"
+            c.connectTimeout = 15000
+            c.readTimeout = 20000
+            c.doOutput = true
+            c.setRequestProperty("User-Agent", UA)
+            c.setRequestProperty("Content-Type", "application/json")
+            c.setRequestProperty("Cookie", cookie)
+            c.setRequestProperty("Authorization", "SAPISIDHASH ${ts}_$hash")
+            c.setRequestProperty("Origin", origin)
+            c.setRequestProperty("X-Origin", origin)
+            c.setRequestProperty("X-Goog-AuthUser", "0")
+            c.outputStream.use {
+                it.write("""{"context":{"client":{"clientName":"WEB","clientVersion":"2.20260101.00.00","hl":"en"}}}""".toByteArray())
+            }
+            val root = JSONObject(c.inputStream.bufferedReader().use { it.readText() })
+            fun text(key: String): String? {
+                val o = findKey(root, key) as? JSONObject ?: return null
+                return o.optString("simpleText").ifBlank { o.optJSONArray("runs")?.optJSONObject(0)?.optString("text") ?: "" }.ifBlank { null }
+            }
+            return text("accountName") ?: text("channelHandle")
+        } catch (_: Exception) {
+            return null
+        }
+    }
+
     fun clear(ctx: Context) {
+        prefs(ctx).edit().remove("yt_name").apply()
         file(ctx).delete()
         CookieManager.getInstance().removeAllCookies(null)
         CookieManager.getInstance().flush()
@@ -154,7 +212,7 @@ object CaveEngine {
     /** Search YouTube for songs (no download). */
     fun search(ctx: Context, q: String): List<Hit> {
         init(ctx)
-        val req = YoutubeDLRequest("ytsearch15:$q").auth(ctx)
+        val req = YoutubeDLRequest("ytsearch15:$q")
         req.addOption("--flat-playlist")
         req.addOption("--print", "%(id)s|||%(title)s|||%(uploader,channel|)s|||%(duration|0)s")
         val out = YoutubeDL.getInstance().execute(req, "cave-search").out
@@ -234,17 +292,18 @@ private fun searchItem(prefix: String, artist: String, title: String): Item {
     return Item("$prefix:${label.lowercase()}", "ytsearch1:$label audio", label)
 }
 
-/** True when [text] looks like a web link rather than something to search for. */
+/** True when [text] is, or contains, a web link rather than something to search for. */
 fun looksLikeLink(text: String): Boolean =
-    Regex("^(https?://|www\\.|music\\.youtube\\.com|youtube\\.com|youtu\\.be|open\\.spotify\\.com|music\\.apple\\.com)\\S*$", RegexOption.IGNORE_CASE)
-        .matches(text.trim())
+    Regex("(https?://|www\\.|music\\.youtube\\.com/|youtube\\.com/|youtu\\.be/|open\\.spotify\\.com/|music\\.apple\\.com/)\\S+", RegexOption.IGNORE_CASE)
+        .containsMatchIn(text.trim())
 
 /**
  * Cleans up a pasted link. Any YouTube / YouTube Music link that carries a playlist id (share links, watch?v=..&list=..,
  * music.youtube.com/browse/VL..) becomes a plain youtube.com/playlist link, which yt-dlp reads reliably.
  */
 fun normalizeLink(raw: String): String {
-    var u = raw.trim().trim('"', '\'', '<', '>', ' ')
+    // a share message can be "Check this out https://..." so take the link out of the text
+    var u = (Regex("https?://\\S+").find(raw)?.value ?: raw).trim().trim('"', '\'', '<', '>', ' ')
     if (u.isEmpty()) return u
     if (!u.contains("://") && u.contains('.') && !u.contains(' ')) u = "https://$u"
     val host = Regex("^https?://([^/?#]+)", RegexOption.IGNORE_CASE).find(u)?.groupValues?.get(1)?.lowercase() ?: return u
@@ -257,39 +316,87 @@ fun normalizeLink(raw: String): String {
     return "https://www.youtube.com/playlist?list=$list"
 }
 
-private fun youtube(ctx: Context, url: String): Resolved {
-    fun list(withAuth: Boolean): List<List<String>> {
-        val req = YoutubeDLRequest(url)
-        if (withAuth) req.auth(ctx)
-        req.addOption("--flat-playlist")
-        req.addOption("--yes-playlist")
-        req.addOption("--ignore-errors")
-        req.addOption("--print", "%(playlist_title|)s|||%(id)s|||%(title)s")
-        val out = YoutubeDL.getInstance().execute(req, "cave-list").out
-        return out.lines().filter { it.contains("|||") }.map { it.split("|||") }
-            .filter { it.size >= 3 && it[1].isNotBlank() && it[1] != "NA" }
-            .filter { it[2].trim() !in setOf("[Private video]", "[Deleted video]") }
-    }
+private val HIDDEN = setOf("[Private video]", "[Deleted video]")
 
-    // Signed in: try with the account first (private lists), then without it, because a stale login can break a public list.
-    val tries = if (YtAuth.signedIn(ctx)) listOf(true, false) else listOf(false)
-    var rows: List<List<String>> = emptyList()
-    var failure: Exception? = null
-    for (withAuth in tries) {
-        if (CaveJob.cancelled) break
-        try {
-            rows = list(withAuth)
-            if (rows.isNotEmpty()) break
-        } catch (e: Exception) {
-            failure = e
+private fun listJson(ctx: Context, url: String, withAuth: Boolean): Resolved? {
+    val req = YoutubeDLRequest(url)
+    if (withAuth) req.auth(ctx)
+    req.addOption("--flat-playlist")
+    req.addOption("--yes-playlist")
+    req.addOption("--ignore-errors")
+    req.addOption("--dump-single-json")
+    val out = YoutubeDL.getInstance().execute(req, "cave-list").out
+    val at = out.indexOf('{')
+    if (at < 0) return null
+    val root = JSONObject(out.substring(at))
+    val entries = root.optJSONArray("entries")
+    val items = ArrayList<Item>()
+    if (entries != null) {
+        for (i in 0 until entries.length()) {
+            val o = entries.optJSONObject(i) ?: continue
+            val id = o.optString("id")
+            val title = o.optString("title").ifBlank { id }
+            if (id.length != 11 || title in HIDDEN) continue
+            items += Item("yt:$id", "https://www.youtube.com/watch?v=$id", title)
         }
+    } else if (root.optString("id").length == 11) { // a single video link
+        val id = root.optString("id")
+        items += Item("yt:$id", "https://www.youtube.com/watch?v=$id", root.optString("title").ifBlank { id })
     }
-    if (rows.isEmpty()) {
-        if (failure != null && !CaveJob.cancelled) throw failure
-        error("No songs found. Is the playlist public (or are you signed in)?")
-    }
+    if (items.isEmpty()) return null
+    val name = root.optString("title").trim().takeIf { it.isNotEmpty() && it != "NA" } ?: "Singles"
+    return Resolved(name, items)
+}
+
+private fun listText(ctx: Context, url: String, withAuth: Boolean): Resolved? {
+    val req = YoutubeDLRequest(url)
+    if (withAuth) req.auth(ctx)
+    req.addOption("--flat-playlist")
+    req.addOption("--yes-playlist")
+    req.addOption("--ignore-errors")
+    req.addOption("--print", "%(playlist_title|)s|||%(id)s|||%(title)s")
+    val out = YoutubeDL.getInstance().execute(req, "cave-list").out
+    val rows = out.lines().filter { it.contains("|||") }.map { it.split("|||") }
+        .filter { it.size >= 3 && it[1].length == 11 && it[2].trim() !in HIDDEN }
+    if (rows.isEmpty()) return null
     val name = rows.map { it[0].trim() }.firstOrNull { it.isNotEmpty() && it != "NA" } ?: "Singles"
     return Resolved(name, rows.map { Item("yt:${it[1]}", "https://www.youtube.com/watch?v=${it[1]}", it[2]) })
+}
+
+/**
+ * Reads a YouTube / YouTube Music playlist. A YouTube Music link can fail on one address and work on the other, and a
+ * saved login helps private lists but can break public ones, so every combination is tried until one gives songs.
+ */
+private fun youtube(ctx: Context, input: String): Resolved {
+    val id = Regex("[?&]list=([A-Za-z0-9_-]+)").find(input)?.groupValues?.get(1)
+        ?: Regex("/browse/VL([A-Za-z0-9_-]+)").find(input)?.groupValues?.get(1)
+    val urls = ArrayList<String>()
+    if (id != null && !id.startsWith("RD")) {
+        urls += "https://www.youtube.com/playlist?list=$id"
+        urls += "https://music.youtube.com/playlist?list=$id"
+    }
+    if (input !in urls) urls += input
+    val auths = if (YtAuth.signedIn(ctx)) listOf(true, false) else listOf(false)
+
+    var failure: String? = null
+    fun attempt(url: String, withAuth: Boolean, text: Boolean): Resolved? {
+        if (CaveJob.cancelled) return null
+        return try {
+            if (text) listText(ctx, url, withAuth) else listJson(ctx, url, withAuth)
+        } catch (e: Exception) {
+            if (failure == null) failure = errText(e)
+            val short = url.substringAfter("://").take(48)
+            val who = if (withAuth) "(logged in) " else ""
+            CaveState.addLog("playlist: $short $who- ${errText(e)}")
+            null
+        }
+    }
+    for (u in urls) for (a in auths) attempt(u, a, false)?.let { return it }
+    // last try with the plain-text listing, in case the JSON one is what breaks
+    for (a in auths) attempt(urls.first(), a, true)?.let { return it }
+
+    if (CaveJob.cancelled) error("Stopped.")
+    error(failure ?: "No songs found. Is the playlist public (or are you signed in)?")
 }
 
 private fun spotify(url: String): Resolved {
@@ -371,15 +478,20 @@ private fun mimeFor(ext: String): String = when (ext.lowercase()) {
     else -> "audio/mpeg"
 }
 
-/** One way of asking yt-dlp for a song. YouTube changes what it serves often, so we try several until one works. */
-private data class Plan(val art: Boolean, val format: String?, val clients: String?)
+/**
+ * One way of asking yt-dlp for a song. YouTube now serves no formats at all to a request that carries a login cookie when
+ * there is no JavaScript runtime (Android has none), and the android_vr client is the one that works without one but it
+ * cannot use cookies. So songs are fetched without the login first; the login is only a fallback (age-limited videos).
+ */
+private data class Plan(val auth: Boolean, val art: Boolean, val format: String?, val clients: String?)
 
 private fun downloadTrack(ctx: Context, target: String, art: Boolean, m4a: Boolean, proc: String): File {
     val dir = File(ctx.cacheDir, "cave-dl/${System.nanoTime()}").apply { mkdirs() }
     val preferred = if (m4a) "bestaudio[ext=m4a]/bestaudio/best" else "bestaudio/best"
 
     fun attempt(p: Plan) {
-        val r = YoutubeDLRequest(target).auth(ctx)
+        val r = YoutubeDLRequest(target)
+        if (p.auth) r.auth(ctx)
         r.addOption("--no-playlist")
         r.addOption("-x")
         // null = let yt-dlp pick, which avoids "Requested format is not available" when our selector matches nothing
@@ -403,14 +515,15 @@ private fun downloadTrack(ctx: Context, target: String, art: Boolean, m4a: Boole
     }
 
     val plans = buildList {
-        if (art) add(Plan(true, preferred, null))
-        add(Plan(false, preferred, null))                          // cover art is the usual thing that breaks
-        add(Plan(false, "ba/b", "default,android_vr"))             // other YouTube clients serve other formats
-        add(Plan(false, null, null))                               // last resort: yt-dlp's own choice
+        if (art) add(Plan(false, true, preferred, "android_vr"))
+        add(Plan(false, false, preferred, "android_vr"))                // cover art is the usual thing that breaks
+        add(Plan(false, false, "ba/b", "default,android_vr"))           // normal client list, still no login
+        if (YtAuth.signedIn(ctx)) add(Plan(true, false, preferred, null)) // with the login (age-limited videos)
+        add(Plan(false, false, null, null))                             // last resort: yt-dlp's own choice
     }
 
     var last: Exception? = null
-    for (p in plans) {
+    for ((i, p) in plans.withIndex()) {
         if (CaveJob.cancelled) break
         dir.listFiles()?.forEach { it.delete() }
         try {
@@ -419,6 +532,7 @@ private fun downloadTrack(ctx: Context, target: String, art: Boolean, m4a: Boole
             break
         } catch (e: Exception) {
             last = e
+            if (i < plans.size - 1) CaveState.addLog("retry ${i + 2}/${plans.size}: ${errText(e)}")
         }
     }
     // some yt-dlp errors still leave a finished file behind, so look before giving up
@@ -492,7 +606,8 @@ object CaveJob {
     }
 
     /** Blocking. Clones a playlist (or syncs a known one) into Music/Cave/<playlist name>. */
-    fun run(ctx: Context, url: String, auto: Boolean, onProgress: (String) -> Unit) {
+    fun run(ctx: Context, rawUrl: String, auto: Boolean, onProgress: (String) -> Unit) {
+        val url = normalizeLink(rawUrl)
         reset()
         val prefs = ctx.getSharedPreferences("honeybeat", Context.MODE_PRIVATE)
         try {

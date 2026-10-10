@@ -11,7 +11,6 @@ import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -107,8 +106,10 @@ fun LoginPopup(onClose: () -> Unit) {
             color = Cub.Muted, fontSize = 12.sp,
         )
         Box(Modifier.fillMaxWidth().height(430.dp).clip(RoundedCornerShape(6.dp)).background(Color.White)) {
+            val ctx = LocalContext.current
             YouTubeLoginView(Modifier.fillMaxWidth().height(430.dp)) {
                 CaveState.signedIn = true
+                YtAuth.refreshName(ctx)
                 close()
             }
         }
@@ -184,26 +185,6 @@ fun ImportPopup(st: Settings, onClose: () -> Unit) {
     }
 }
 
-/** Small status pill under the Search title: green "Logged in to YouTube", or a tap-to-sign-in hint. */
-@Composable
-fun YouTubeStatus(onSignIn: () -> Unit, modifier: Modifier = Modifier) {
-    val on = CaveState.signedIn
-    val tint = if (on) Color(0xFF3DDC84) else Cub.Muted
-    Row(
-        modifier.clip(RoundedCornerShape(20.dp)).background(Cub.Card)
-            .then(if (on) Modifier else Modifier.clickable(onClick = onSignIn))
-            .padding(horizontal = 12.dp, vertical = 7.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        Box(Modifier.size(8.dp).clip(RoundedCornerShape(4.dp)).background(tint))
-        Text(
-            if (on) "Logged in to YouTube" else "Not signed in to YouTube - tap to sign in",
-            color = if (on) Cub.Text else Cub.Muted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
-        )
-    }
-}
-
 @Composable
 fun SearchPage(st: Settings, onSignIn: () -> Unit) {
     val ctx = LocalContext.current
@@ -261,7 +242,6 @@ fun SearchPage(st: Settings, onSignIn: () -> Unit) {
 
     Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState())) {
         PageTitle("Search", "Find a song and press Get. Files go to Music/Cave.")
-        YouTubeStatus(onSignIn, Modifier.padding(start = 16.dp, bottom = 12.dp))
 
         // search music + small playlist download button
         Row(

@@ -6,16 +6,17 @@ HoneyBeat is a music player and a downloader in one Android app, styled like Cub
 (cover, previous / play / next). Tap it to open the full player.
 
 - **Library**: "All music" plus one playlist per folder in `Music/Cave`. Search works across everything. Open a playlist and
-  press the gear for: change / reset cover, Sync now, Auto-update, Delete playlist. Sort songs by **Title**, **Artist** or
-  **Album** (album and artist sorts group the list under headers; the choice is remembered).
+  press the gear for: change / reset cover, Sync now, Auto-update, Delete playlist. The **Sort** button next to Play opens
+  a popup: Title, Artist, Album or Date added, each Up or Down (album and artist sorts group the list under headers).
 - **Player**: tinted from the cover, animated level bars, seek bar, shuffle / repeat, and what plays next. The share
   button (top right) makes a story-sized picture of the song and opens Instagram with it, like Spotify.
 - **Search**: type a song, press the search button, press **Get** to download it (queue as many as you like).
   The small download button next to it opens the playlist popup: paste a YouTube Music, Spotify or Apple Music link.
-  Pasting a link straight into the search box does the same. A green **Logged in to YouTube** pill shows when you are signed in.
+  Pasting a link straight into the search box does the same. 
   When you are signed in it also has **Import from my YouTube**, which downloads a playlist of yours with its cover and
   keeps it updated.
-- **Options**: playback, YouTube account (sign in / out), playlist updates (on/off, check every 5 / 15 / 30 / 60 min,
+- **Options**: playback (including **Cover accent color**: while a song plays, buttons and highlights take a color from
+  its cover instead of blue), YouTube account (sign in / out, shows "Logged in" and your account name), playlist updates (on/off, check every 5 / 15 / 30 / 60 min,
   notifications), and download settings (parallel downloads, quality, cover art, mobile data, yt-dlp).
 
 Needs Android 10 or newer.
@@ -39,8 +40,13 @@ Other ways: Android Studio (Build > Build APK(s)), or `build-apk.bat` (result in
   the app when there are too many.
 - Playlists must be public (or you signed in). Spotify's public page only exposes about 100 tracks.
 - Spotify and Apple Music songs are searched on YouTube, so the match can occasionally be a wrong version.
-- If yt-dlp says a format is not available, HoneyBeat retries on its own: without cover art, with other YouTube clients,
-  then with yt-dlp's own format choice.
+- Songs are downloaded **without** your YouTube login on purpose: with a login cookie and no JavaScript runtime (Android has
+  none) YouTube returns no formats at all ("Requested format is not available"). The login is only used for private
+  playlists, and as a late fallback for age-limited songs. If a download still fails, the Log card shows each retry.
+- **Updating the app**: every build is signed with the key in `app/honeybeat-debug.keystore` and gets a higher version number
+  from GitHub (`100 + run number`), so a new APK installs over the old one and keeps your library and sign-in. Builds made
+  before this key was added were signed with a different key, so uninstall once; after that you never need to again. Keep
+  the keystore file in the repo, because a different key means an uninstall again.
 - Instagram sharing: the picture goes through Instagram's normal share screen. To use Instagram's Add-to-Story screen
   directly, put a (free) Facebook App ID in `ShareMusic.IG_APP_ID`. Without Instagram installed, the Android share sheet opens.
 - YouTube audio is lossy to begin with, so MP3 320 kbps is the highest MP3 setting but not better than the source.

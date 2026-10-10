@@ -63,6 +63,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -198,6 +199,8 @@ fun CubApp() {
     LaunchedEffect(Unit) {
         CaveState.recents = CaveStore.load(prefs)
         CaveState.signedIn = YtAuth.signedIn(ctx)
+        CaveState.ytName = YtAuth.savedName(ctx)
+        if (CaveState.signedIn && CaveState.ytName.isBlank()) YtAuth.refreshName(ctx)
         WatchService.sync(ctx)
         if (hasAccess) rescan() else askPermissions()
     }
@@ -209,6 +212,14 @@ fun CubApp() {
         remote.connect()
         onDispose { remote.release() }
     }
+
+    // accent colour: the app's blue, or the colour of the cover that is playing (can be switched off in Options)
+    val playingId = remote.item?.mediaId?.toLongOrNull()
+    val accentTarget by produceState(Cub.AccentDefault, playingId, st.coverAccent.value) {
+        value = if (st.coverAccent.value && playingId != null) CoverAccent.of(ctx, playingId) ?: Cub.AccentDefault else Cub.AccentDefault
+    }
+    val accentAnim by animateColorAsState(accentTarget, tween(450), label = "accent")
+    SideEffect { Cub.accentNow = accentAnim }
 
     val player = remote.player
     LaunchedEffect(player, st.shuffle.value, st.repeat.value) {
@@ -320,17 +331,36 @@ fun SearchBox(query: String, onQuery: (String) -> Unit) {
 private fun matches(s: Song, q: String) =
     q.isBlank() || s.title.contains(q, true) || s.artist.contains(q, true) || s.album.contains(q, true)
 
-/** Sort chips: Title / Artist / Album. The choice is saved in Settings. */
+/** "Sort: Album" button. Opens the sort popup. The choice is saved in Settings. */
 @Composable
-fun SortBar(st: Settings) {
-    val mode = sortModeOf(st.sort.value)
-    Row(
-        Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        Text("Sort", color = Cub.Muted, fontSize = 12.sp, fontFamily = Display, modifier = Modifier.padding(end = 4.dp))
-        SortMode.values().forEach { m -> Chip(m.label, mode == m) { st.sort.set(m.name) } }
+fun SortButton(st: Settings) {
+    var open by remember { mutableStateOf(false) }
+    CubButton("Sort: ${sortModeOf(st.sort.value).label}") { open = true }
+    if (open) SortPopup(st) { open = false }
+}
+
+@Composable
+private fun SortPopup(st: Settings, onClose: () -> Unit) {
+    AnimatedPopup(onDismiss = onClose) { close ->
+        val mode = sortModeOf(st.sort.value)
+        val desc = st.sortDesc.value
+        val (up, down) = sortDirectionLabels(mode)
+        Text("Sort songs", color = Cub.Text, fontSize = 20.sp, fontFamily = Display, fontWeight = FontWeight.Medium)
+        Text("Sort by", color = Cub.Muted, fontSize = 12.sp)
+        SortMode.values().toList().chunked(2).forEach { pair ->
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                pair.forEach { m -> Chip(m.label, mode == m) { st.sort.set(m.name) } }
+            }
+        }
+        Text("Direction", color = Cub.Muted, fontSize = 12.sp)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Chip("Up: $up", !desc) { st.sortDesc.set(false) }
+            Chip("Down: $down", desc) { st.sortDesc.set(true) }
+        }
+        if (mode == SortMode.Album || mode == SortMode.Artist) {
+            Text("Songs stay in track order inside each ${mode.label.lowercase()}.", color = Cub.Muted, fontSize = 12.sp)
+        }
+        CubButton("Done", primary = true) { close() }
     }
 }
 
@@ -415,7 +445,8 @@ fun LibraryPage(
         if (key == null) {
             val all = folders.first().songs
             val mode = sortModeOf(st.sort.value)
-            val found = remember(all, query, mode) { sortSongs(all.filter { matches(it, query) }, mode) }
+            val desc = st.sortDesc.value
+            val found = remember(all, query, mode, desc) { sortSongs(all.filter { matches(it, query) }, mode, desc) }
             Column(Modifier.fillMaxSize()) {
                 PageTitle("Library", "Every folder in Music/Cave is a playlist.")
                 SearchBox(query, onQuery)
@@ -429,7 +460,7 @@ fun LibraryPage(
                     if (found.isEmpty()) {
                         Text("No songs match that search.", color = Cub.Muted, fontSize = 13.sp, modifier = Modifier.padding(16.dp))
                     }
-                    SortBar(st)
+                    Row(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) { SortButton(st) }
                     SortedSongList(found, mode, currentId, playing, onPlay)
                 } else {
                     LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -442,7 +473,8 @@ fun LibraryPage(
         } else {
             val folder = folders.find { it.key == key } ?: folders.first()
             val mode = sortModeOf(st.sort.value)
-            val shown = remember(folder, query, mode) { sortSongs(folder.songs.filter { matches(it, query) }, mode) }
+            val desc = st.sortDesc.value
+            val shown = remember(folder, query, mode, desc) { sortSongs(folder.songs.filter { matches(it, query) }, mode, desc) }
             LibraryDetail(folder, shown, query, onQuery, currentId, playing, st, onBack = { onOpen(null) }, onPlay = onPlay, onChanged = onChanged)
         }
     }
@@ -536,12 +568,12 @@ fun LibraryDetail(
                 )
             }
         }
-        Row(Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
+        Row(Modifier.padding(horizontal = 16.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             CubButton("Play", primary = true) { onPlay(shown, 0) }
+            SortButton(st)
         }
         Spacer(Modifier.height(8.dp))
         SearchBox(query, onQuery)
-        SortBar(st)
         if (shown.isEmpty()) {
             Text(
                 if (query.isNotEmpty()) "No songs match that search." else "This playlist is empty.",
@@ -865,20 +897,28 @@ fun OptionsPage(st: Settings, onRescan: () -> Unit, songCount: Int, listCount: I
             ToggleCard("Shuffle", "Play the queue in random order.", st.shuffle.value) { st.shuffle.set(it) }
             ToggleCard("Repeat all", "Start over when the last song ends.", st.repeat.value) { st.repeat.set(it) }
             ToggleCard("Show cover art", "Covers in the lists and on the player.", st.art.value) { st.art.set(it) }
+            ToggleCard(
+                "Cover accent color",
+                "While a song is playing, buttons and highlights use a color from its cover instead of blue.",
+                st.coverAccent.value,
+            ) { st.coverAccent.set(it) }
             ActionCard("Library", "$songCount songs in $listCount playlists.", "Rescan", onRescan)
         }
 
         SectionLabel("YOUTUBE ACCOUNT")
         Column(Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             ActionCard(
-                "YouTube",
-                if (CaveState.signedIn) "Logged in. Private playlists and importing your playlists are on."
-                else "Not signed in. Sign in for private playlists and importing your own.",
+                if (CaveState.signedIn) "Logged in to YouTube" else "YouTube",
+                if (CaveState.signedIn) {
+                    (if (CaveState.ytName.isNotBlank()) "Signed in as ${CaveState.ytName}. " else "") +
+                        "Private playlists and importing your playlists are on."
+                } else "Not signed in. Sign in for private playlists and importing your own.",
                 if (CaveState.signedIn) "Sign out" else "Sign in",
             ) {
                 if (CaveState.signedIn) {
                     YtAuth.clear(ctx)
                     CaveState.signedIn = false
+                    CaveState.ytName = ""
                 } else onLogin()
             }
         }

@@ -31,6 +31,8 @@ data class Song(
     val folder: String,
     /** MediaStore track number (disc * 1000 + track), 0 when the file has none. */
     val track: Int = 0,
+    /** When the file was added to the phone, in seconds since 1970. */
+    val added: Long = 0L,
 ) {
     val uri: Uri get() = songUri(id)
 }
@@ -67,6 +69,7 @@ fun loadSongs(ctx: Context): List<Song> {
         MediaStore.Audio.Media.DURATION,
         MediaStore.Audio.Media.DATA,
         MediaStore.Audio.Media.TRACK,
+        MediaStore.Audio.Media.DATE_ADDED,
     )
     val sel = "${MediaStore.Audio.Media.DATA} LIKE '%$CAVE%' AND ${MediaStore.Audio.Media.DURATION} > 0"
     ctx.contentResolver.query(a, proj, sel, null, "${MediaStore.Audio.Media.TITLE} COLLATE NOCASE ASC")?.use { c ->
@@ -77,6 +80,7 @@ fun loadSongs(ctx: Context): List<Song> {
         val iDur = c.getColumnIndexOrThrow(MediaStore.Audio.Media.DURATION)
         val iData = c.getColumnIndexOrThrow(MediaStore.Audio.Media.DATA)
         val iTrack = c.getColumnIndexOrThrow(MediaStore.Audio.Media.TRACK)
+        val iAdded = c.getColumnIndexOrThrow(MediaStore.Audio.Media.DATE_ADDED)
         while (c.moveToNext()) {
             val path = c.getString(iData) ?: ""
             val at = path.indexOf(CAVE, ignoreCase = true)
@@ -91,6 +95,7 @@ fun loadSongs(ctx: Context): List<Song> {
                 path = path,
                 folder = folder,
                 track = c.getInt(iTrack),
+                added = c.getLong(iAdded),
             )
         }
     }
@@ -98,32 +103,55 @@ fun loadSongs(ctx: Context): List<Song> {
 }
 
 /** How a song list is ordered. Album and Artist also group the list under headers. */
-enum class SortMode(val label: String) { Title("Title"), Artist("Artist"), Album("Album") }
+enum class SortMode(val label: String) { Title("Title"), Artist("Artist"), Album("Album"), Date("Date added") }
 
 fun sortModeOf(name: String): SortMode = SortMode.values().firstOrNull { it.name == name } ?: SortMode.Title
 
 private val NOCASE = String.CASE_INSENSITIVE_ORDER
 
-fun sortSongs(list: List<Song>, mode: SortMode): List<Song> = when (mode) {
-    SortMode.Title -> list.sortedWith(compareBy<Song, String>(NOCASE) { it.title })
-    SortMode.Artist -> list.sortedWith(
-        compareBy<Song, String>(NOCASE) { it.artist }
-            .thenBy(NOCASE) { it.album }
-            .thenBy { if (it.track <= 0) Int.MAX_VALUE else it.track }
-            .thenBy(NOCASE) { it.title }
-    )
-    // albums A-Z (songs without an album last), each album in track order
-    SortMode.Album -> list.sortedWith(
-        compareBy<Song> { it.album.isEmpty() }
-            .thenBy(NOCASE) { it.album }
-            .thenBy { if (it.track <= 0) Int.MAX_VALUE else it.track }
-            .thenBy(NOCASE) { it.title }
-    )
+/** Inside an album (or under an artist) songs stay in track order, whichever way the groups are sorted. */
+private fun inAlbum(a: Song, b: Song): Int {
+    val byAlbum = NOCASE.compare(a.album, b.album)
+    if (byAlbum != 0) return byAlbum
+    val ta = if (a.track <= 0) Int.MAX_VALUE else a.track
+    val tb = if (b.track <= 0) Int.MAX_VALUE else b.track
+    if (ta != tb) return ta.compareTo(tb)
+    return NOCASE.compare(a.title, b.title)
 }
+
+/** [desc] false = A to Z / oldest first. true = Z to A / newest first. */
+fun sortSongs(list: List<Song>, mode: SortMode, desc: Boolean): List<Song> {
+    val d = if (desc) -1 else 1
+    val cmp: Comparator<Song> = when (mode) {
+        SortMode.Title -> Comparator { a, b -> d * NOCASE.compare(a.title, b.title) }
+        SortMode.Artist -> Comparator { a, b ->
+            val c = d * NOCASE.compare(a.artist, b.artist)
+            if (c != 0) c else inAlbum(a, b)
+        }
+        // songs without an album always go last
+        SortMode.Album -> Comparator { a, b ->
+            if (a.album.isEmpty() != b.album.isEmpty()) {
+                if (a.album.isEmpty()) 1 else -1
+            } else {
+                val c = d * NOCASE.compare(a.album, b.album)
+                if (c != 0) c else inAlbum(a, b)
+            }
+        }
+        SortMode.Date -> Comparator { a, b ->
+            val c = d * a.added.compareTo(b.added)
+            if (c != 0) c else NOCASE.compare(a.title, b.title)
+        }
+    }
+    return list.sortedWith(cmp)
+}
+
+/** Wording for the two directions, which depends on what is being sorted. */
+fun sortDirectionLabels(mode: SortMode): Pair<String, String> =
+    if (mode == SortMode.Date) "Oldest first" to "Newest first" else "A to Z" to "Z to A"
 
 /** The header a song sits under for this sort, or null when the list has no groups. */
 fun groupOf(s: Song, mode: SortMode): String? = when (mode) {
-    SortMode.Title -> null
+    SortMode.Title, SortMode.Date -> null
     SortMode.Artist -> s.artist
     SortMode.Album -> s.album.ifEmpty { "No album" }
 }

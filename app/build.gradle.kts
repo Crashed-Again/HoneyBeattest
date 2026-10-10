@@ -12,13 +12,28 @@ android {
         applicationId = "com.neonbear.honeybeat"
         minSdk = 29
         targetSdk = 34
-        versionCode = 3
-        versionName = "2.1.0"
+        // Every GitHub build gets a higher number, so each new APK installs over the old one.
+        versionCode = 100 + (System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 0)
+        versionName = "2.2.0"
         ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
     }
 
+    // One fixed key for every build. GitHub makes a new random debug key on each run, and Android refuses to install an
+    // APK over an app signed with a different key, which is why updating needed an uninstall first.
+    signingConfigs {
+        getByName("debug") {
+            storeFile = file("honeybeat-debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
     buildTypes {
-        release { isMinifyEnabled = false }
+        release {
+            isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("debug")
+        }
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
