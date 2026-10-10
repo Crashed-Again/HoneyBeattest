@@ -37,7 +37,19 @@ object ShareMusic {
     private val BEAR = listOf(".XX..XX.", "XXXXXXXX", "XXXXXXXX", "X.XXXX.X", "XXXXXXXX", ".XXXXXX.", "..XXXX..")
 
     /** Draws the card and saves it as a PNG in the app cache. Call it off the main thread. */
-    fun cardUri(ctx: Context, cover: Bitmap?, title: String, artist: String): Uri {
+    fun cardUri(ctx: Context, cover: Bitmap?, title: String, artist: String): Uri =
+        saveCard(ctx, renderCard(ctx, cover, title, artist))
+
+    /** Writes the finished card to the app cache and returns the share link for it. Call it off the main thread. */
+    fun saveCard(ctx: Context, bmp: Bitmap): Uri {
+        val dir = File(ctx.cacheDir, "share").apply { mkdirs() }
+        val file = File(dir, "honeybeat-share.png")
+        file.outputStream().use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
+        return FileProvider.getUriForFile(ctx, "${ctx.packageName}.share", file)
+    }
+
+    /** Draws the story card. The share screen shows this as a preview before anything is sent. Call it off the main thread. */
+    fun renderCard(ctx: Context, cover: Bitmap?, title: String, artist: String): Bitmap {
         val bmp = Bitmap.createBitmap(W, H, Bitmap.Config.ARGB_8888)
         val c = Canvas(bmp)
 
@@ -84,11 +96,7 @@ object ShareMusic {
         drawBear(c, left + 44f, 1690f, 11f, Color.WHITE)
         val name = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { textSize = 42f; typeface = display; color = Color.WHITE }
         c.drawText("HoneyBeat", left + 44f * 2 + 24f, 1704f, name)
-
-        val dir = File(ctx.cacheDir, "share").apply { mkdirs() }
-        val file = File(dir, "honeybeat-share.png")
-        file.outputStream().use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
-        return FileProvider.getUriForFile(ctx, "${ctx.packageName}.share", file)
+        return bmp
     }
 
     /** Pixel bear centred on (cx, cy). */

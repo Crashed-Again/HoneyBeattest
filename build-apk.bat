@@ -20,6 +20,12 @@ if not exist "%GD%\bin\gradle.bat" (
   powershell -NoProfile -Command "New-Item -ItemType Directory -Force '.gradle-dist' | Out-Null; Invoke-WebRequest 'https://services.gradle.org/distributions/gradle-%GV%-bin.zip' -OutFile '.gradle-dist\g.zip'; Expand-Archive -Force '.gradle-dist\g.zip' '.gradle-dist'"
 )
 
+rem QuickJS = the JavaScript runtime YouTube downloads need (the app starts it as libqjs.so)
+if not exist app\src\main\jniLibs\arm64-v8a\libqjs.so (
+  echo Downloading QuickJS ...
+  powershell -NoProfile -Command "New-Item -ItemType Directory -Force 'app\src\main\jniLibs\arm64-v8a','app\src\main\jniLibs\armeabi-v7a' | Out-Null; $b='https://github.com/quickjs-ng/quickjs/releases/download/v0.17.0'; Invoke-WebRequest ($b + '/qjs-linux-aarch64') -OutFile 'app\src\main\jniLibs\arm64-v8a\libqjs.so'; Invoke-WebRequest ($b + '/qjs-linux-armv7') -OutFile 'app\src\main\jniLibs\armeabi-v7a\libqjs.so'"
+)
+
 call "%GD%\bin\gradle.bat" --no-daemon assembleDebug
 if errorlevel 1 (
   echo.

@@ -27,7 +27,7 @@ data class Song(
     val album: String,
     val durationMs: Long,
     val path: String,
-    /** First folder under Music/Cave, or "" for songs directly in Music/Cave. */
+    /** First folder under Music/HoneyBeat, or "" for songs directly in Music/HoneyBeat. */
     val folder: String,
     /** MediaStore track number (disc * 1000 + track), 0 when the file has none. */
     val track: Int = 0,
@@ -37,7 +37,7 @@ data class Song(
     val uri: Uri get() = songUri(id)
 }
 
-/** A Cave playlist: one folder inside Music/Cave. The key "" is the built-in All music list. */
+/** A playlist: one folder inside Music/HoneyBeat. The key "" is the built-in All music list. */
 data class Folder(val key: String, val name: String, val songs: List<Song>)
 
 fun songUri(id: Long): Uri =
@@ -55,7 +55,9 @@ fun Song.toItem(): MediaItem = MediaItem.Builder()
     )
     .build()
 
-private const val CAVE = "/Music/Cave/"
+/** Where songs live. Music/Cave is the old name of the folder; it is still read so earlier downloads keep showing up. */
+private const val HOME = "/Music/HoneyBeat/"
+private const val OLD_HOME = "/Music/Cave/"
 
 @Suppress("DEPRECATION")
 fun loadSongs(ctx: Context): List<Song> {
@@ -71,7 +73,7 @@ fun loadSongs(ctx: Context): List<Song> {
         MediaStore.Audio.Media.TRACK,
         MediaStore.Audio.Media.DATE_ADDED,
     )
-    val sel = "${MediaStore.Audio.Media.DATA} LIKE '%$CAVE%' AND ${MediaStore.Audio.Media.DURATION} > 0"
+    val sel = "(${MediaStore.Audio.Media.DATA} LIKE '%$HOME%' OR ${MediaStore.Audio.Media.DATA} LIKE '%$OLD_HOME%') AND ${MediaStore.Audio.Media.DURATION} > 0"
     ctx.contentResolver.query(a, proj, sel, null, "${MediaStore.Audio.Media.TITLE} COLLATE NOCASE ASC")?.use { c ->
         val iId = c.getColumnIndexOrThrow(MediaStore.Audio.Media._ID)
         val iTitle = c.getColumnIndexOrThrow(MediaStore.Audio.Media.TITLE)
@@ -83,8 +85,10 @@ fun loadSongs(ctx: Context): List<Song> {
         val iAdded = c.getColumnIndexOrThrow(MediaStore.Audio.Media.DATE_ADDED)
         while (c.moveToNext()) {
             val path = c.getString(iData) ?: ""
-            val at = path.indexOf(CAVE, ignoreCase = true)
-            val rel = if (at >= 0) path.substring(at + CAVE.length) else ""
+            var at = path.indexOf(HOME, ignoreCase = true)
+            var skip = HOME.length
+            if (at < 0) { at = path.indexOf(OLD_HOME, ignoreCase = true); skip = OLD_HOME.length }
+            val rel = if (at >= 0) path.substring(at + skip) else ""
             val folder = if (rel.contains('/')) rel.substringBefore('/') else ""
             out += Song(
                 id = c.getLong(iId),
@@ -156,7 +160,7 @@ fun groupOf(s: Song, mode: SortMode): String? = when (mode) {
     SortMode.Album -> s.album.ifEmpty { "No album" }
 }
 
-/** All music first, then one playlist per folder in Music/Cave. */
+/** All music first, then one playlist per folder in Music/HoneyBeat. */
 fun buildFolders(songs: List<Song>): List<Folder> {
     val byFolder = songs.filter { it.folder.isNotEmpty() }.groupBy { it.folder }
     val sorted = byFolder.keys.sortedWith(String.CASE_INSENSITIVE_ORDER)

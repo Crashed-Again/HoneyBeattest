@@ -20,6 +20,21 @@ jobs:
         with:
           gradle-version: "8.9"
 
+      # YouTube needs a JavaScript runtime before it gives out audio. QuickJS is one small static program per CPU type;
+      # the app finds it as libqjs.so and hands it to yt-dlp (see JsRuntime in CaveCore.kt).
+      - name: Fetch QuickJS (JavaScript runtime for yt-dlp)
+        run: |
+          base=https://github.com/quickjs-ng/quickjs/releases/download/v0.17.0
+          mkdir -p app/src/main/jniLibs/arm64-v8a app/src/main/jniLibs/armeabi-v7a
+          curl -fL --retry 3 "$base/qjs-linux-aarch64" -o app/src/main/jniLibs/arm64-v8a/libqjs.so
+          curl -fL --retry 3 "$base/qjs-linux-armv7" -o app/src/main/jniLibs/armeabi-v7a/libqjs.so
+          for f in app/src/main/jniLibs/*/libqjs.so; do
+            file "$f"
+            if readelf -l "$f" | grep -q INTERP; then
+              echo "::warning::$f is dynamically linked, so it may not start on Android (the app then falls back to the old download method)"
+            fi
+          done
+
       - name: Build debug APK
         run: gradle --no-daemon assembleDebug
 

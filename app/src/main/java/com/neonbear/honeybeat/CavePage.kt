@@ -123,7 +123,7 @@ fun LoginPrompt(st: Settings, onSignIn: () -> Unit, onClose: () -> Unit) {
     AnimatedPopup(onDismiss = onClose) { close ->
         Text("Sign in to YouTube?", color = Cub.Text, fontSize = 20.sp, fontFamily = Display, fontWeight = FontWeight.Medium)
         Text(
-            "Signing in unlocks private playlists and lets you import your own YouTube playlists. You can also do it later in Options.",
+            "YouTube often refuses downloads from signed-out apps (\"confirm you're not a bot\"). Signing in fixes that, unlocks private playlists and lets you import your music playlists. You can also do it later in Options.",
             color = Cub.Muted, fontSize = 13.sp,
         )
         ToggleCard("Don't show again", "", st.noPrompt.value) { st.noPrompt.set(it) }
@@ -143,16 +143,16 @@ fun ImportPopup(st: Settings, onClose: () -> Unit) {
     var msg by remember { mutableStateOf("") }
     LaunchedEffect(Unit) { result = withContext(Dispatchers.IO) { CaveEngine.myPlaylists(ctx) } }
     AnimatedPopup(onDismiss = onClose) { close ->
-        Text("Import from YouTube", color = Cub.Text, fontSize = 20.sp, fontFamily = Display, fontWeight = FontWeight.Medium)
+        Text("Import from YouTube Music", color = Cub.Text, fontSize = 20.sp, fontFamily = Display, fontWeight = FontWeight.Medium)
         Text(
-            "Downloads the playlist with its cover and keeps it updated in the background.",
+            "Your music playlists. Downloads the playlist with its cover and keeps it updated in the background.",
             color = Cub.Muted, fontSize = 12.sp,
         )
         val r = result
         if (r == null) {
             Text("Loading your playlists...", color = Cub.Muted, fontSize = 13.sp)
         } else {
-            if (r.error != null) Text("Couldn't list all playlists: ${r.error}", color = Color(0xFFE5645F), fontSize = 12.sp)
+            if (r.error != null) Text("Couldn't list your playlists: ${r.error}", color = Color(0xFFE5645F), fontSize = 12.sp)
             Column(
                 Modifier.fillMaxWidth().heightIn(max = 340.dp).verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -241,7 +241,7 @@ fun SearchPage(st: Settings, onSignIn: () -> Unit) {
     }
 
     Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState())) {
-        PageTitle("Search", "Find a song and press Get. Files go to Music/Cave.")
+        PageTitle("Search", "Find a song and press Get. Files go to Music/HoneyBeat.")
 
         // search music + small playlist download button
         Row(
@@ -347,7 +347,7 @@ fun SearchPage(st: Settings, onSignIn: () -> Unit) {
                 }
             }
             if (CaveState.signedIn) {
-                CubButton("Import from my YouTube") { showImport = true; close() }
+                CubButton("Import my music playlists") { showImport = true; close() }
             }
             CubButton("Cancel") { close() }
         }

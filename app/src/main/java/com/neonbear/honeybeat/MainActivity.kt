@@ -28,6 +28,7 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -47,6 +48,7 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
@@ -63,7 +65,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -77,9 +78,11 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -204,6 +207,16 @@ fun CubApp() {
         WatchService.sync(ctx)
         if (hasAccess) rescan() else askPermissions()
     }
+    // after a reinstall: playlists come back from the link files kept in Music/HoneyBeat, so they can check for updates again
+    LaunchedEffect(hasAccess) {
+        if (hasAccess) {
+            val r = withContext(Dispatchers.IO) { HoneyFiles.restoreInto(ctx) }
+            if (r.added > 0) {
+                if (r.auto) st.watch.set(true)
+                WatchService.sync(ctx)
+            }
+        }
+    }
     LaunchedEffect(CaveState.finished) { if (CaveState.finished > 0) rescan() }
     LaunchedEffect(st.watch.value) { WatchService.sync(ctx) }
 
@@ -219,7 +232,6 @@ fun CubApp() {
         value = if (st.coverAccent.value && playingId != null) CoverAccent.of(ctx, playingId) ?: Cub.AccentDefault else Cub.AccentDefault
     }
     val accentAnim by animateColorAsState(accentTarget, tween(450), label = "accent")
-    SideEffect { Cub.accentNow = accentAnim }
 
     val player = remote.player
     LaunchedEffect(player, st.shuffle.value, st.repeat.value) {
@@ -234,7 +246,7 @@ fun CubApp() {
 
     val folders = remember(songs) { buildFolders(songs) }
 
-    CompositionLocalProvider(LocalShowArt provides st.art.value) {
+    CompositionLocalProvider(LocalShowArt provides st.art.value, LocalAccent provides accentAnim) {
         Box(Modifier.fillMaxSize().background(Cub.Panel)) {
             Column(Modifier.fillMaxSize().statusBarsPadding()) {
                 Box(Modifier.weight(1f)) {
@@ -416,7 +428,7 @@ fun LibraryPage(
 ) {
     if (!hasAccess) {
         Column(Modifier.fillMaxSize()) {
-            PageTitle("Library", "Your Cave music.")
+            PageTitle("Library", "Your HoneyBeat music.")
             Column(
                 Modifier.padding(horizontal = 16.dp).fillMaxWidth().clip(RoundedCornerShape(6.dp))
                     .background(Cub.Card).padding(16.dp),
@@ -448,11 +460,11 @@ fun LibraryPage(
             val desc = st.sortDesc.value
             val found = remember(all, query, mode, desc) { sortSongs(all.filter { matches(it, query) }, mode, desc) }
             Column(Modifier.fillMaxSize()) {
-                PageTitle("Library", "Every folder in Music/Cave is a playlist.")
+                PageTitle("Library", "Every folder in Music/HoneyBeat is a playlist.")
                 SearchBox(query, onQuery)
                 if (all.isEmpty()) {
                     Text(
-                        "No songs in Music/Cave yet. Search or download a playlist in the Search tab.",
+                        "No songs in Music/HoneyBeat yet. Search or download a playlist in the Search tab.",
                         color = Cub.Muted, fontSize = 13.sp, modifier = Modifier.padding(16.dp),
                     )
                 }
@@ -517,6 +529,7 @@ private fun PlaylistSettingsPopup(
                 CaveStore.save(ctx.getSharedPreferences("honeybeat", Context.MODE_PRIVATE), list)
                 if (on) st.watch.set(true)
                 WatchService.sync(ctx)
+                Thread { HoneyFiles.save(ctx, recent.copy(auto = on)) }.start() // keep the link file in step
             }
         } else if (folder.key.isNotEmpty()) {
             Text("Sync and auto-update are for playlists downloaded from a link.", color = Cub.Muted, fontSize = 12.sp)
@@ -606,6 +619,7 @@ fun LibraryDetail(
                             try { ctx.contentResolver.delete(songUri(it.id), null, null) } catch (_: Exception) {}
                         }
                         PlaylistCovers.remove(ctx, folder.key)
+                        HoneyFiles.remove(ctx, folder.key) // so the playlist does not come back after a reinstall
                         val list = CaveState.recents.filter { safeName(it.name) != folder.key }
                         CaveStore.save(ctx.getSharedPreferences("honeybeat", Context.MODE_PRIVATE), list)
                         CaveState.ui { CaveState.recents = list; onChanged(); onBack() }
@@ -712,6 +726,7 @@ fun PlayingScreen(
     val player = remote.player
     val id = item?.mediaId?.toLongOrNull() ?: -1L
     val shareScope = rememberCoroutineScope()
+    var preview by remember { mutableStateOf<SharePreview?>(null) }
 
     val tint by produceState(Cub.Panel, id) {
         val b = Covers.load(ctx, id, 64)
@@ -739,7 +754,7 @@ fun PlayingScreen(
                 Text("NOW PLAYING", color = Cub.Muted, fontSize = 12.sp, fontFamily = Display)
                 Spacer(Modifier.weight(1f))
                 if (item != null) {
-                    // like Spotify's share: a picture of the song, sent to Instagram
+                    // like Spotify's share: build the picture first and show it, then send it to Instagram on request
                     IconBtn(IconKind.Share, 40.dp, Color.Black.copy(alpha = 0.35f)) {
                         val md0 = item.mediaMetadata
                         val title = md0.title?.toString() ?: ""
@@ -747,8 +762,8 @@ fun PlayingScreen(
                         shareScope.launch {
                             try {
                                 val cover = Covers.load(ctx, id, 1024)
-                                val uri = withContext(Dispatchers.IO) { ShareMusic.cardUri(ctx, cover, title, artist) }
-                                ShareMusic.toInstagram(ctx, uri, listOf(title, artist).filter { it.isNotBlank() }.joinToString(" - "))
+                                val card = withContext(Dispatchers.IO) { ShareMusic.renderCard(ctx, cover, title, artist) }
+                                preview = SharePreview(card, title, artist)
                             } catch (_: Exception) {
                                 android.widget.Toast.makeText(ctx, "Couldn't share this song.", android.widget.Toast.LENGTH_SHORT).show()
                             }
@@ -845,6 +860,47 @@ fun PlayingScreen(
             }
         }
     }
+
+    preview?.let { p ->
+        SharePreviewPopup(
+            p,
+            onShare = {
+                // runs in the player's scope, which outlives the popup closing
+                shareScope.launch {
+                    try {
+                        val uri = withContext(Dispatchers.IO) { ShareMusic.saveCard(ctx, p.card) }
+                        ShareMusic.toInstagram(ctx, uri, listOf(p.title, p.artist).filter { it.isNotBlank() }.joinToString(" - "))
+                    } catch (_: Exception) {
+                        android.widget.Toast.makeText(ctx, "Couldn't share this song.", android.widget.Toast.LENGTH_SHORT).show()
+                    }
+                }
+            },
+            onClose = { preview = null },
+        )
+    }
+}
+
+/** The finished story card, kept until the person confirms or cancels. */
+class SharePreview(val card: Bitmap, val title: String, val artist: String)
+
+/** Shows exactly what will be posted, so the person can check it before Instagram opens. */
+@Composable
+fun SharePreviewPopup(p: SharePreview, onShare: () -> Unit, onClose: () -> Unit) {
+    AnimatedPopup(onDismiss = onClose) { close ->
+        Text("Share preview", color = Cub.Text, fontSize = 20.sp, fontFamily = Display, fontWeight = FontWeight.Medium)
+        Text("This is the picture that will be sent to Instagram.", color = Cub.Muted, fontSize = 12.sp)
+        Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+            Image(
+                p.card.asImageBitmap(), null,
+                Modifier.height(420.dp).aspectRatio(9f / 16f).clip(RoundedCornerShape(8.dp)),
+                contentScale = ContentScale.Fit,
+            )
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            CubButton("Share to Instagram", primary = true) { onShare(); close() }
+            CubButton("Cancel") { close() }
+        }
+    }
 }
 
 @Composable
@@ -911,8 +967,8 @@ fun OptionsPage(st: Settings, onRescan: () -> Unit, songCount: Int, listCount: I
                 if (CaveState.signedIn) "Logged in to YouTube" else "YouTube",
                 if (CaveState.signedIn) {
                     (if (CaveState.ytName.isNotBlank()) "Signed in as ${CaveState.ytName}. " else "") +
-                        "Private playlists and importing your playlists are on."
-                } else "Not signed in. Sign in for private playlists and importing your own.",
+                        "Downloads, private playlists and importing your music playlists are on."
+                } else "Not signed in. YouTube often blocks downloads without a sign-in, so sign in here.",
                 if (CaveState.signedIn) "Sign out" else "Sign in",
             ) {
                 if (CaveState.signedIn) {

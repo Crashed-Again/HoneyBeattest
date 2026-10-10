@@ -5,7 +5,7 @@ HoneyBeat is a music player and a downloader in one Android app, styled like Cub
 **Tabs:** Library, Search, Options. Playing is not a tab: a mini player sits above the bottom bar whenever a song is loaded
 (cover, previous / play / next). Tap it to open the full player.
 
-- **Library**: "All music" plus one playlist per folder in `Music/Cave`. Search works across everything. Open a playlist and
+- **Library**: "All music" plus one playlist per folder in `Music/HoneyBeat`. Search works across everything. Open a playlist and
   press the gear for: change / reset cover, Sync now, Auto-update, Delete playlist. The **Sort** button next to Play opens
   a popup: Title, Artist, Album or Date added, each Up or Down (album and artist sorts group the list under headers).
 - **Player**: tinted from the cover, animated level bars, seek bar, shuffle / repeat, and what plays next. The share
@@ -13,11 +13,17 @@ HoneyBeat is a music player and a downloader in one Android app, styled like Cub
 - **Search**: type a song, press the search button, press **Get** to download it (queue as many as you like).
   The small download button next to it opens the playlist popup: paste a YouTube Music, Spotify or Apple Music link.
   Pasting a link straight into the search box does the same. 
-  When you are signed in it also has **Import from my YouTube**, which downloads a playlist of yours with its cover and
-  keeps it updated.
+  When you are signed in it also has **Import my music playlists**: your YouTube Music library (Liked music and every
+  playlist in it, never Watch later), downloaded with its cover and kept updated.
 - **Options**: playback (including **Cover accent color**: while a song plays, buttons and highlights take a color from
   its cover instead of blue), YouTube account (sign in / out, shows "Logged in" and your account name), playlist updates (on/off, check every 5 / 15 / 30 / 60 min,
   notifications), and download settings (parallel downloads, quality, cover art, mobile data, yt-dlp).
+
+- **Link file**: every downloaded playlist gets a small `HoneyBeat.m3u` in its folder (`Music/HoneyBeat/<playlist>/`). It
+  holds the playlist link, its name, the auto-update flag and the songs already downloaded. If you uninstall HoneyBeat
+  and install it again, the files are read back: the playlists reappear and only new songs are downloaded. Deleting a
+  playlist in the app deletes its link file too. Earlier downloads in `Music/Cave` still show up in the Library.
+- **Share to Instagram** first shows a preview of the picture; nothing opens until you press **Share to Instagram**.
 
 Needs Android 10 or newer.
 
@@ -40,9 +46,11 @@ Other ways: Android Studio (Build > Build APK(s)), or `build-apk.bat` (result in
   the app when there are too many.
 - Playlists must be public (or you signed in). Spotify's public page only exposes about 100 tracks.
 - Spotify and Apple Music songs are searched on YouTube, so the match can occasionally be a wrong version.
-- Songs are downloaded **without** your YouTube login on purpose: with a login cookie and no JavaScript runtime (Android has
-  none) YouTube returns no formats at all ("Requested format is not available"). The login is only used for private
-  playlists, and as a late fallback for age-limited songs. If a download still fails, the Log card shows each retry.
+- **Why downloads failed ("Sign in to confirm you're not a bot", "Requested format is not available", HTTP 403)**: YouTube
+  now asks yt-dlp for a sign-in and makes it solve a JavaScript puzzle. Android has no JavaScript runtime, so the build
+  adds QuickJS (`libqjs.so`, fetched by the GitHub workflow) and yt-dlp is pointed at it. Songs are tried first with your
+  signed-in session plus QuickJS, then without the login, then with the older methods. **Sign in under Options** for the
+  best chance. The Log card shows "JavaScript runtime: QuickJS ready" when the runtime starts, and each retry.
 - **Updating the app**: every build is signed with the key in `app/honeybeat-debug.keystore` and gets a higher version number
   from GitHub (`100 + run number`), so a new APK installs over the old one and keeps your library and sign-in. Builds made
   before this key was added were signed with a different key, so uninstall once; after that you never need to again. Keep

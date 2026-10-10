@@ -85,19 +85,21 @@ object Cub {
     val Hover = Color(0xFF2A2A2A)
     /** The app's blue. [Accent] is this, or the playing song's cover colour when that option is on. */
     val AccentDefault = Color(0xFF3B82F6)
-    var accentNow by mutableStateOf(AccentDefault)
-    val Accent: Color get() = accentNow
+    /** Read through a CompositionLocal, so every button and highlight redraws the moment the colour changes. */
+    val Accent: Color @Composable get() = LocalAccent.current
     val Text = Color(0xFFF2F2F2)
     val Muted = Color(0xFF8C8C8C)
     val Button = Color(0xFF3A3A3A)
     val Dot = Color(0xFF5A5A5A)
 }
 
+val LocalAccent = compositionLocalOf { Color(0xFF3B82F6) }
+
 @Composable
 fun CubTheme(content: @Composable () -> Unit) {
     MaterialTheme(
         colorScheme = darkColorScheme(
-            primary = Cub.Accent,
+            primary = Cub.AccentDefault,
             background = Cub.Panel,
             surface = Cub.Card,
             onSurface = Cub.Text,
