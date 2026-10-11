@@ -19,10 +19,23 @@ HoneyBeat is a music player and a downloader in one Android app, styled like Cub
   its cover instead of blue), YouTube account (sign in / out, shows "Logged in" and your account name), playlist updates (on/off, check every 5 / 15 / 30 / 60 min,
   notifications), and download settings (parallel downloads, quality, cover art, mobile data, yt-dlp).
 
-- **Link file**: every downloaded playlist gets a small `HoneyBeat.m3u` in its folder (`Music/HoneyBeat/<playlist>/`). It
-  holds the playlist link, its name, the auto-update flag and the songs already downloaded. If you uninstall HoneyBeat
-  and install it again, the files are read back: the playlists reappear and only new songs are downloaded. Deleting a
-  playlist in the app deletes its link file too. Earlier downloads in `Music/Cave` still show up in the Library.
+- **Link file**: every downloaded playlist gets a small `.json` file with the playlist link, its name, the auto-update flag
+  and the songs already downloaded. Android only lets an app put audio into `Music`, so the file is saved as
+  `Documents/HoneyBeat/<playlist>.json` (it is also tried in `Music/HoneyBeat/<playlist>/HoneyBeat.json`, which many phones
+  refuse). If you uninstall HoneyBeat and install it again, the files are read back: the playlists reappear and only new
+  songs are downloaded. Deleting a playlist in the app deletes its link file too. Earlier downloads in `Music/Cave` still
+  show up in the Library.
+- **Refetch** (playlist gear menu): reads the playlist again and downloads every song that is missing from the folder. It
+  also checks the songs already there and replaces damaged ones ("Unknown artist" or no cover picture) with a fresh
+  download. **Sync now** only downloads songs that are new on the playlist.
+- **Streaming playlists**: in **Import my music playlists**, turn on **Stream instead of download**. The playlist shows in
+  the Library with "streaming" next to it; its songs are looked up on YouTube when played (a few seconds for the first
+  song, the next one is prepared ahead) and nothing is saved. In its gear menu: Sync now, **Download instead**, Delete.
+- **Playlist cover**: when a playlist is downloaded or streamed, its cover is fetched from YouTube (the playlist's own
+  picture, else the first video's thumbnail) if it has none yet.
+- Downloads try **two** methods per song, not eight. Search asks YouTube directly (about a second) and only falls back to
+  yt-dlp if that fails.
+- **Deleting a playlist** asks Android for permission when needed, and stops playing songs that were deleted.
 - **Share to Instagram** first shows a preview of the picture; nothing opens until you press **Share to Instagram**.
 
 Needs Android 10 or newer.

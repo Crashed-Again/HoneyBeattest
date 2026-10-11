@@ -55,7 +55,7 @@ private fun isMetered(ctx: Context): Boolean =
 
 @Composable
 fun InputBox(value: String, hint: String, modifier: Modifier = Modifier, onChange: (String) -> Unit) {
-    Box(modifier.fillMaxWidth().clip(RoundedCornerShape(4.dp)).background(Cub.Hover).padding(horizontal = 12.dp, vertical = 13.dp)) {
+    Box(modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(Cub.Hover).padding(horizontal = 12.dp, vertical = 13.dp)) {
         if (value.isEmpty()) Text(hint, color = Cub.Muted, fontSize = 14.sp)
         BasicTextField(
             value = value, onValueChange = onChange, singleLine = true,
@@ -105,7 +105,7 @@ fun LoginPopup(onClose: () -> Unit) {
             "Used for private playlists, search and playlist links. Yt-dlp can get an account rate-limited, so a spare Google account is safer.",
             color = Cub.Muted, fontSize = 12.sp,
         )
-        Box(Modifier.fillMaxWidth().height(430.dp).clip(RoundedCornerShape(6.dp)).background(Color.White)) {
+        Box(Modifier.fillMaxWidth().height(430.dp).clip(RoundedCornerShape(18.dp)).background(Color.White)) {
             val ctx = LocalContext.current
             YouTubeLoginView(Modifier.fillMaxWidth().height(430.dp)) {
                 CaveState.signedIn = true
@@ -141,6 +141,7 @@ fun ImportPopup(st: Settings, onClose: () -> Unit) {
     var result by remember { mutableStateOf<MyPlaylists?>(null) }
     var started by remember { mutableStateOf<List<String>>(emptyList()) }
     var msg by remember { mutableStateOf("") }
+    var stream by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) { result = withContext(Dispatchers.IO) { CaveEngine.myPlaylists(ctx) } }
     AnimatedPopup(onDismiss = onClose) { close ->
         Text("Import from YouTube Music", color = Cub.Text, fontSize = 20.sp, fontFamily = Display, fontWeight = FontWeight.Medium)
@@ -148,6 +149,11 @@ fun ImportPopup(st: Settings, onClose: () -> Unit) {
             "Your music playlists. Downloads the playlist with its cover and keeps it updated in the background.",
             color = Cub.Muted, fontSize = 12.sp,
         )
+        ToggleCard(
+            "Stream instead of download",
+            "Songs are played over the internet and not saved on the phone. Needs a connection while playing.",
+            stream,
+        ) { stream = it }
         val r = result
         if (r == null) {
             Text("Loading your playlists...", color = Cub.Muted, fontSize = 13.sp)
@@ -159,21 +165,27 @@ fun ImportPopup(st: Settings, onClose: () -> Unit) {
             ) {
                 r.items.forEach { pl ->
                     Row(
-                        Modifier.fillMaxWidth().clip(RoundedCornerShape(6.dp)).background(Cub.Hover).padding(12.dp),
+                        Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(Cub.Hover).padding(12.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         Text(pl.title, color = Cub.Text, fontSize = 14.sp, fontWeight = FontWeight.SemiBold,
                             maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
                         val done = pl.url in started
-                        CubButton(if (done) "Started" else "Import", primary = !done) {
+                        CubButton(if (done) (if (stream) "Added" else "Started") else if (stream) "Stream" else "Import", primary = !done) {
                             if (!done) {
-                                st.watch.set(true)
-                                if (CaveService.start(ctx, pl.url, true)) {
+                                if (stream) {
                                     started = started + pl.url
-                                    msg = ""
-                                    WatchService.sync(ctx)
-                                } else msg = "Another download is running. Try again in a moment."
+                                    msg = "Reading ${pl.title}..."
+                                    StreamJob.importAsync(ctx, pl.url) { msg = it }
+                                } else {
+                                    st.watch.set(true)
+                                    if (CaveService.start(ctx, pl.url, true)) {
+                                        started = started + pl.url
+                                        msg = ""
+                                        WatchService.sync(ctx)
+                                    } else msg = "Another download is running. Try again in a moment."
+                                }
                             }
                         }
                     }
@@ -263,7 +275,7 @@ fun SearchPage(st: Settings, onSignIn: () -> Unit) {
         ) {
             hits.forEach { h ->
                 Row(
-                    Modifier.fillMaxWidth().clip(RoundedCornerShape(6.dp)).background(Cub.Card).padding(10.dp),
+                    Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(Cub.Card).padding(10.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
@@ -292,7 +304,7 @@ fun SearchPage(st: Settings, onSignIn: () -> Unit) {
             if (CaveState.total > 0) CaveState.done.toFloat() / CaveState.total else 0f, tween(250), label = "prog"
         )
         Column(
-            Modifier.padding(horizontal = 16.dp).fillMaxWidth().clip(RoundedCornerShape(6.dp))
+            Modifier.padding(horizontal = 16.dp).fillMaxWidth().clip(RoundedCornerShape(18.dp))
                 .background(Cub.Card).padding(14.dp).animateContentSize(),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
@@ -301,7 +313,7 @@ fun SearchPage(st: Settings, onSignIn: () -> Unit) {
                 Text(CaveState.current, color = Cub.Muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             if (CaveState.running || CaveState.total > 0) {
-                Box(Modifier.fillMaxWidth().height(6.dp).background(Cub.Button)) {
+                Box(Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)).background(Cub.Button)) {
                     Box(Modifier.fillMaxWidth(frac).height(6.dp).background(Cub.Accent))
                 }
                 if (CaveState.total > 0) {
@@ -316,7 +328,7 @@ fun SearchPage(st: Settings, onSignIn: () -> Unit) {
 
         if (CaveState.log.isNotEmpty()) {
             Column(
-                Modifier.padding(16.dp).fillMaxWidth().clip(RoundedCornerShape(6.dp))
+                Modifier.padding(16.dp).fillMaxWidth().clip(RoundedCornerShape(18.dp))
                     .background(Cub.Card).padding(12.dp),
                 verticalArrangement = Arrangement.spacedBy(3.dp),
             ) {

@@ -7,6 +7,7 @@ import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.os.Build
 import android.os.Bundle
+import android.provider.MediaStore
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.BackHandler
@@ -66,6 +67,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
@@ -201,6 +203,7 @@ fun CubApp() {
     }
     LaunchedEffect(Unit) {
         CaveState.recents = CaveStore.load(prefs)
+        CaveState.streams = StreamStore.load(prefs)
         CaveState.signedIn = YtAuth.signedIn(ctx)
         CaveState.ytName = YtAuth.savedName(ctx)
         if (CaveState.signedIn && CaveState.ytName.isBlank()) YtAuth.refreshName(ctx)
@@ -228,8 +231,13 @@ fun CubApp() {
 
     // accent colour: the app's blue, or the colour of the cover that is playing (can be switched off in Options)
     val playingId = remote.item?.mediaId?.toLongOrNull()
-    val accentTarget by produceState(Cub.AccentDefault, playingId, st.coverAccent.value) {
-        value = if (st.coverAccent.value && playingId != null) CoverAccent.of(ctx, playingId) ?: Cub.AccentDefault else Cub.AccentDefault
+    val playingArt = remote.item?.mediaMetadata?.artworkUri?.toString()
+    val accentTarget by produceState(Cub.AccentDefault, playingId, playingArt, st.coverAccent.value) {
+        value = when {
+            !st.coverAccent.value || playingId == null -> Cub.AccentDefault
+            playingId < 0 && playingArt != null -> NetImages.load(playingArt)?.let { CoverAccent.from(it) } ?: Cub.AccentDefault
+            else -> CoverAccent.of(ctx, playingId) ?: Cub.AccentDefault
+        }
     }
     val accentAnim by animateColorAsState(accentTarget, tween(450), label = "accent")
 
@@ -244,10 +252,10 @@ fun CubApp() {
     BackHandler(enabled = page == Page.Library && openKey != null) { openKey = null; query = "" }
     BackHandler(enabled = showPlayer) { showPlayer = false }
 
-    val folders = remember(songs) { buildFolders(songs) }
+    val folders = remember(songs, CaveState.streams) { buildFolders(songs, CaveState.streams) }
 
     CompositionLocalProvider(LocalShowArt provides st.art.value, LocalAccent provides accentAnim) {
-        Box(Modifier.fillMaxSize().background(Cub.Panel)) {
+        Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(lerp(accentAnim, Color.Black, 0.6f), Cub.Panel, Color.Black)))) {
             Column(Modifier.fillMaxSize().statusBarsPadding()) {
                 Box(Modifier.weight(1f)) {
                     AnimatedContent(
@@ -266,6 +274,12 @@ fun CubApp() {
                                 currentId = remote.item?.mediaId, playing = remote.playing,
                                 onPlay = { list, i -> remote.play(list, i) },
                                 st = st, onChanged = { rescan() },
+                                onDropped = { ids ->
+                                    val p = remote.player
+                                    if (p != null) for (i in p.mediaItemCount - 1 downTo 0) {
+                                        if (p.getMediaItemAt(i).mediaId in ids) p.removeMediaItem(i)
+                                    }
+                                },
                             )
                             Page.Search -> SearchPage(st = st, onSignIn = { showLogin = true })
                             Page.Options -> OptionsPage(
@@ -303,22 +317,21 @@ fun CubApp() {
 
 @Composable
 fun NavBar(current: Page, onPick: (Page) -> Unit) {
-    Row(
-        Modifier.fillMaxWidth().background(Cub.Black).navigationBarsPadding().padding(horizontal = 8.dp, vertical = 8.dp),
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
-    ) {
-        Page.values().forEach { p ->
-            val sel = p == current
-            val bg by animateColorAsState(if (sel) Color(0xFF222222) else Color.Transparent, tween(150), label = "navBg")
-            val fg by animateColorAsState(if (sel) Cub.Text else Cub.Muted, tween(150), label = "navFg")
-            val bar by animateDpAsState(if (sel) 18.dp else 0.dp, tween(180), label = "navBar")
-            Box(
-                Modifier.weight(1f).clip(RoundedCornerShape(4.dp)).background(bg)
-                    .clickable { onPick(p) }.padding(vertical = 13.dp),
-                contentAlignment = Alignment.Center,
-            ) {
-                Box(Modifier.align(Alignment.CenterStart).width(3.dp).height(bar).background(Cub.Accent))
-                Text(p.label, color = fg, fontSize = 13.sp, fontFamily = Display)
+    // a floating pill, like the controls on the player screen
+    Box(Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 16.dp, vertical = 10.dp)) {
+        Row(
+            Modifier.fillMaxWidth().clip(RoundedCornerShape(30.dp)).background(Color(0xD90B0B0F)).padding(6.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Page.values().forEach { p ->
+                val sel = p == current
+                val bg by animateColorAsState(if (sel) Cub.Accent.copy(alpha = 0.28f) else Color.Transparent, tween(200), label = "navBg")
+                val fg by animateColorAsState(if (sel) Cub.Text else Cub.Muted, tween(200), label = "navFg")
+                Box(
+                    Modifier.weight(1f).clip(RoundedCornerShape(24.dp)).background(bg)
+                        .clickable { onPick(p) }.padding(vertical = 13.dp),
+                    contentAlignment = Alignment.Center,
+                ) { Text(p.label, color = fg, fontSize = 13.sp, fontFamily = Display) }
             }
         }
     }
@@ -327,7 +340,7 @@ fun NavBar(current: Page, onPick: (Page) -> Unit) {
 @Composable
 fun SearchBox(query: String, onQuery: (String) -> Unit) {
     Box(
-        Modifier.padding(horizontal = 16.dp).fillMaxWidth().clip(RoundedCornerShape(6.dp))
+        Modifier.padding(horizontal = 16.dp).fillMaxWidth().clip(RoundedCornerShape(18.dp))
             .background(Cub.Card).padding(horizontal = 14.dp, vertical = 12.dp)
     ) {
         if (query.isEmpty()) Text("Search songs, artists, albums", color = Cub.Muted, fontSize = 14.sp)
@@ -424,13 +437,13 @@ fun LibraryPage(
     openKey: String?, onOpen: (String?) -> Unit,
     query: String, onQuery: (String) -> Unit,
     currentId: String?, playing: Boolean, onPlay: (List<Song>, Int) -> Unit,
-    st: Settings, onChanged: () -> Unit,
+    st: Settings, onChanged: () -> Unit, onDropped: (Set<String>) -> Unit,
 ) {
     if (!hasAccess) {
         Column(Modifier.fillMaxSize()) {
             PageTitle("Library", "Your HoneyBeat music.")
             Column(
-                Modifier.padding(horizontal = 16.dp).fillMaxWidth().clip(RoundedCornerShape(6.dp))
+                Modifier.padding(horizontal = 16.dp).fillMaxWidth().clip(RoundedCornerShape(18.dp))
                     .background(Cub.Card).padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
@@ -487,15 +500,17 @@ fun LibraryPage(
             val mode = sortModeOf(st.sort.value)
             val desc = st.sortDesc.value
             val shown = remember(folder, query, mode, desc) { sortSongs(folder.songs.filter { matches(it, query) }, mode, desc) }
-            LibraryDetail(folder, shown, query, onQuery, currentId, playing, st, onBack = { onOpen(null) }, onPlay = onPlay, onChanged = onChanged)
+            LibraryDetail(folder, shown, query, onQuery, currentId, playing, st, onBack = { onOpen(null) }, onPlay = onPlay, onChanged = onChanged, onDropped = onDropped)
         }
     }
 }
 
+fun toast(ctx: Context, text: String) = android.widget.Toast.makeText(ctx, text, android.widget.Toast.LENGTH_LONG).show()
+
 @Composable
 private fun SettingRow(title: String, sub: String, danger: Boolean = false, onClick: () -> Unit) {
     Column(
-        Modifier.bounceClick(0.98f, onClick).fillMaxWidth().clip(RoundedCornerShape(6.dp)).background(Cub.Hover)
+        Modifier.bounceClick(0.98f, onClick).fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(Cub.Hover)
             .padding(horizontal = 14.dp, vertical = 12.dp)
     ) {
         Text(title, color = if (danger) Color(0xFFE5645F) else Cub.Text, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
@@ -505,7 +520,7 @@ private fun SettingRow(title: String, sub: String, danger: Boolean = false, onCl
 
 @Composable
 private fun PlaylistSettingsPopup(
-    folder: Folder, recent: Recent?, hasCustom: Boolean, st: Settings,
+    folder: Folder, recent: Recent?, streamList: StreamList?, hasCustom: Boolean, st: Settings,
     onPickCover: () -> Unit, onDelete: () -> Unit, onClose: () -> Unit,
 ) {
     val ctx = LocalContext.current
@@ -514,9 +529,29 @@ private fun PlaylistSettingsPopup(
             maxLines = 2, overflow = TextOverflow.Ellipsis)
         SettingRow("Change cover", "Pick a picture from your phone.") { onPickCover(); close() }
         if (hasCustom) SettingRow("Reset cover", "Go back to the first song's cover.") { PlaylistCovers.remove(ctx, folder.key); close() }
-        if (recent != null) {
+        if (streamList != null) {
+            SettingRow("Sync now", "Read the playlist again and add new songs to the stream list.") {
+                toast(ctx, "Reading the playlist...")
+                StreamJob.importAsync(ctx, streamList.url) { toast(ctx, it) }
+                close()
+            }
+            SettingRow("Download instead", "Save every song on this phone and stop streaming it.") {
+                if (CaveService.start(ctx, streamList.url, true)) {
+                    StreamJob.remove(ctx, streamList.url)
+                    PlaylistCovers.remove(ctx, folder.key)
+                    st.watch.set(true)
+                    toast(ctx, "Downloading. The playlist will appear in the Library when songs arrive.")
+                } else toast(ctx, "Another download is running. Try again in a moment.")
+                close()
+            }
+            Text("Streaming playlist: songs are played over the internet and are not saved on the phone.", color = Cub.Muted, fontSize = 12.sp)
+        } else if (recent != null) {
             SettingRow("Sync now", "Download new songs from the original playlist.") {
                 CaveService.start(ctx, recent.url, false)
+                close()
+            }
+            SettingRow("Refetch", "Read the playlist again and download every song that is missing from this folder.") {
+                CaveService.start(ctx, recent.url, false, refetch = true)
                 close()
             }
             ToggleCard(
@@ -535,7 +570,7 @@ private fun PlaylistSettingsPopup(
             Text("Sync and auto-update are for playlists downloaded from a link.", color = Cub.Muted, fontSize = 12.sp)
         }
         if (folder.key.isNotEmpty()) {
-            SettingRow("Delete playlist", "Removes its songs from your phone.", danger = true) { close(); onDelete() }
+            SettingRow("Delete playlist", if (folder.stream) "Removes it from HoneyBeat." else "Removes its songs from your phone.", danger = true) { close(); onDelete() }
         }
         CubButton("Close") { close() }
     }
@@ -545,17 +580,59 @@ private fun PlaylistSettingsPopup(
 fun LibraryDetail(
     folder: Folder, shown: List<Song>, query: String, onQuery: (String) -> Unit,
     currentId: String?, playing: Boolean, st: Settings,
-    onBack: () -> Unit, onPlay: (List<Song>, Int) -> Unit, onChanged: () -> Unit,
+    onBack: () -> Unit, onPlay: (List<Song>, Int) -> Unit, onChanged: () -> Unit, onDropped: (Set<String>) -> Unit,
 ) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     var showSettings by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
+
+    // Deleting: try it directly; whatever Android refuses is deleted after the person confirms the system question.
+    var delRun by remember { mutableIntStateOf(0) }
+    var delDone by remember { mutableIntStateOf(0) }
+    var delAsk by remember { mutableStateOf<android.content.IntentSender?>(null) }
+    val delLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { res ->
+        delAsk = null
+        if (res.resultCode == android.app.Activity.RESULT_OK) {
+            if (Build.VERSION.SDK_INT >= 30) delDone++ else delRun++ // Android 10 asks file by file, so go on
+        } else {
+            android.widget.Toast.makeText(ctx, "Playlist not deleted.", android.widget.Toast.LENGTH_SHORT).show()
+        }
+    }
+    LaunchedEffect(delAsk) {
+        delAsk?.let { delLauncher.launch(androidx.activity.result.IntentSenderRequest.Builder(it).build()) }
+    }
+    LaunchedEffect(delRun) {
+        if (delRun == 0) return@LaunchedEffect
+        val (failed, ask) = withContext(Dispatchers.IO) { deleteSongs(ctx, folder.songs) }
+        when {
+            failed.isEmpty() -> delDone++
+            Build.VERSION.SDK_INT >= 30 -> delAsk = MediaStore.createDeleteRequest(ctx.contentResolver, failed).intentSender
+            ask != null -> delAsk = ask
+            else -> android.widget.Toast.makeText(ctx, "Couldn't delete this playlist.", android.widget.Toast.LENGTH_SHORT).show()
+        }
+    }
+    LaunchedEffect(delDone) {
+        if (delDone == 0) return@LaunchedEffect
+        val ids = folder.songs.map { it.id.toString() }.toSet()
+        withContext(Dispatchers.IO) {
+            PlaylistCovers.remove(ctx, folder.key)
+            HoneyFiles.remove(ctx, folder.key) // so the playlist does not come back after a reinstall
+            val list = CaveState.recents.filter { safeName(it.name) != folder.key }
+            CaveStore.save(ctx.getSharedPreferences("honeybeat", Context.MODE_PRIVATE), list)
+            CaveState.ui { CaveState.recents = list }
+        }
+        onDropped(ids) // stop playing songs that no longer exist
+        onChanged()
+        onBack()
+        WatchService.sync(ctx)
+    }
     val pick = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri != null) scope.launch(Dispatchers.IO) { PlaylistCovers.save(ctx, folder.key, uri) }
     }
     val custom = remember(PlaylistCovers.version) { PlaylistCovers.has(ctx, folder.key) }
     val recent = CaveState.recents.firstOrNull { safeName(it.name) == folder.key }
+    val streamList = CaveState.streams.firstOrNull { it.key == folder.key }
 
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth().padding(start = 4.dp, end = 12.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -571,12 +648,12 @@ fun LibraryDetail(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            FolderCover(folder.key, folder.songs.firstOrNull()?.id ?: -1L, Modifier.size(84.dp), 400)
+            FolderCover(folder.key, folder.songs.firstOrNull()?.id ?: -1L, Modifier.size(84.dp), 400, folder.songs.firstOrNull()?.stream?.let { streamThumb(it) })
             Column(Modifier.weight(1f)) {
                 Text(folder.name, color = Cub.Text, fontSize = 24.sp, fontFamily = Display, fontWeight = FontWeight.Medium,
                     maxLines = 2, overflow = TextOverflow.Ellipsis)
                 Text(
-                    if (folder.songs.size == 1) "1 song" else "${folder.songs.size} songs",
+                    (if (folder.songs.size == 1) "1 song" else "${folder.songs.size} songs") + if (folder.stream) "  -  streaming" else "",
                     color = Cub.Muted, fontSize = 13.sp, modifier = Modifier.padding(top = 2.dp),
                 )
             }
@@ -598,7 +675,7 @@ fun LibraryDetail(
 
     if (showSettings) {
         PlaylistSettingsPopup(
-            folder, recent, custom, st,
+            folder, recent, streamList, custom, st,
             onPickCover = { pick.launch("image/*") },
             onDelete = { confirmDelete = true },
             onClose = { showSettings = false },
@@ -608,23 +685,19 @@ fun LibraryDetail(
         AnimatedPopup(onDismiss = { confirmDelete = false }) { close ->
             Text("Delete \"${folder.name}\"?", color = Cub.Text, fontSize = 20.sp, fontFamily = Display, fontWeight = FontWeight.Medium)
             Text(
-                "This deletes ${folder.songs.size} songs from your phone. Files that another app created may be kept.",
+                if (folder.stream) "This removes the streaming playlist from HoneyBeat. Nothing is deleted from your phone."
+                else "This deletes ${folder.songs.size} songs from your phone. Android may ask you to confirm.",
                 color = Cub.Muted, fontSize = 13.sp,
             )
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 CubButton("Delete", primary = true) {
                     close()
-                    scope.launch(Dispatchers.IO) {
-                        folder.songs.forEach {
-                            try { ctx.contentResolver.delete(songUri(it.id), null, null) } catch (_: Exception) {}
-                        }
+                    if (folder.stream) {
+                        streamList?.let { StreamJob.remove(ctx, it.url) }
                         PlaylistCovers.remove(ctx, folder.key)
-                        HoneyFiles.remove(ctx, folder.key) // so the playlist does not come back after a reinstall
-                        val list = CaveState.recents.filter { safeName(it.name) != folder.key }
-                        CaveStore.save(ctx.getSharedPreferences("honeybeat", Context.MODE_PRIVATE), list)
-                        CaveState.ui { CaveState.recents = list; onChanged(); onBack() }
-                        WatchService.sync(ctx)
-                    }
+                        onDropped(folder.songs.map { it.id.toString() }.toSet())
+                        onBack()
+                    } else delRun++
                 }
                 CubButton("Cancel") { close() }
             }
@@ -635,16 +708,16 @@ fun LibraryDetail(
 @Composable
 fun FolderCard(f: Folder, modifier: Modifier = Modifier, onClick: () -> Unit) {
     Row(
-        modifier.bounceClick(0.98f, onClick).fillMaxWidth().clip(RoundedCornerShape(6.dp)).background(Cub.Card).padding(10.dp),
+        modifier.bounceClick(0.98f, onClick).fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(Cub.Card).padding(10.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        FolderCover(f.key, f.songs.firstOrNull()?.id ?: -1L, Modifier.size(56.dp), 320)
+        FolderCover(f.key, f.songs.firstOrNull()?.id ?: -1L, Modifier.size(56.dp), 320, f.songs.firstOrNull()?.stream?.let { streamThumb(it) })
         Column(Modifier.weight(1f)) {
             Text(f.name, color = Cub.Text, fontSize = 15.sp, fontWeight = FontWeight.SemiBold,
                 maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text(if (f.songs.size == 1) "1 song" else "${f.songs.size} songs", color = Cub.Muted, fontSize = 12.sp,
-                modifier = Modifier.padding(top = 3.dp))
+            Text((if (f.songs.size == 1) "1 song" else "${f.songs.size} songs") + if (f.stream) "  -  streaming" else "",
+                color = Cub.Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 3.dp))
         }
         Text(">", color = Cub.Muted, fontSize = 16.sp, modifier = Modifier.padding(end = 6.dp))
     }
@@ -656,11 +729,12 @@ fun SongRow(s: Song, current: Boolean, playing: Boolean, modifier: Modifier = Mo
     val bar by animateColorAsState(if (current) Cub.Accent else Color.Transparent, tween(150), label = "bar")
     Row(
         modifier.bounceClick(0.98f, onClick).fillMaxWidth().height(IntrinsicSize.Min)
-            .clip(RoundedCornerShape(6.dp)).background(Cub.Card),
+            .clip(RoundedCornerShape(18.dp)).background(Cub.Card),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(Modifier.width(3.dp).fillMaxHeight().background(bar))
-        Cover(s.id, 256, Modifier.padding(start = 10.dp).size(46.dp))
+        if (s.stream != null) NetCover(streamThumb(s.stream), Modifier.padding(start = 10.dp).size(46.dp))
+        else Cover(s.id, 256, Modifier.padding(start = 10.dp).size(46.dp))
         Column(Modifier.weight(1f).padding(horizontal = 12.dp, vertical = 10.dp)) {
             Text(
                 s.title, color = titleColor, fontSize = 14.sp,
@@ -676,7 +750,8 @@ fun SongRow(s: Song, current: Boolean, playing: Boolean, modifier: Modifier = Mo
             EqBars(playing)
             Spacer(Modifier.width(10.dp))
         }
-        Text(fmt(s.durationMs), color = Cub.Muted, fontSize = 12.sp, modifier = Modifier.padding(end = 12.dp))
+        if (s.durationMs > 0) Text(fmt(s.durationMs), color = Cub.Muted, fontSize = 12.sp, modifier = Modifier.padding(end = 12.dp))
+        else Spacer(Modifier.width(12.dp))
     }
 }
 
@@ -684,14 +759,15 @@ fun SongRow(s: Song, current: Boolean, playing: Boolean, modifier: Modifier = Mo
 fun MiniPlayer(remote: Remote, onOpen: () -> Unit) {
     val md = remote.item?.mediaMetadata
     val id = remote.item?.mediaId?.toLongOrNull() ?: -1L
-    Column(Modifier.fillMaxWidth().background(Cub.Black)) {
+    Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp).clip(RoundedCornerShape(24.dp)).background(Color(0xE60B0B0F))) {
         Box(Modifier.fillMaxWidth().height(2.dp).background(Cub.Accent))
         Row(
             Modifier.fillMaxWidth().clickable(onClick = onOpen).padding(horizontal = 12.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            Cover(id, 256, Modifier.size(42.dp))
+            val art = md?.artworkUri?.toString()
+            if (id < 0 && art != null) NetCover(art, Modifier.size(42.dp)) else Cover(id, 256, Modifier.size(42.dp))
             Column(Modifier.weight(1f)) {
                 Text(md?.title?.toString() ?: "", color = Cub.Text, fontSize = 14.sp, fontWeight = FontWeight.SemiBold,
                     maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -710,7 +786,7 @@ fun Chip(text: String, on: Boolean, onClick: () -> Unit) {
     val c by animateColorAsState(if (on) Cub.Accent else Cub.Muted, tween(150), label = "chip")
     Box(
         Modifier.bounceClick(onClick = onClick)
-            .border(1.dp, if (on) Cub.Accent else Cub.Button, RoundedCornerShape(4.dp))
+            .border(1.dp, if (on) Cub.Accent else Cub.Button, RoundedCornerShape(50))
             .padding(horizontal = 12.dp, vertical = 8.dp),
     ) { Text(text, color = c, fontSize = 13.sp, fontWeight = FontWeight.SemiBold) }
 }
@@ -728,8 +804,9 @@ fun PlayingScreen(
     val shareScope = rememberCoroutineScope()
     var preview by remember { mutableStateOf<SharePreview?>(null) }
 
-    val tint by produceState(Cub.Panel, id) {
-        val b = Covers.load(ctx, id, 64)
+    val artUrl = item?.mediaMetadata?.artworkUri?.toString()
+    val tint by produceState(Cub.Panel, id, artUrl) {
+        val b = if (id < 0 && artUrl != null) NetImages.load(artUrl) else Covers.load(ctx, id, 64)
         value = if (b != null) {
             val px = Bitmap.createScaledBitmap(b, 1, 1, true).getPixel(0, 0)
             lerp(Color(px), Color.Black, 0.45f)
@@ -761,7 +838,7 @@ fun PlayingScreen(
                         val artist = md0.artist?.toString() ?: ""
                         shareScope.launch {
                             try {
-                                val cover = Covers.load(ctx, id, 1024)
+                                val cover = if (id < 0 && artUrl != null) NetImages.load(artUrl) else Covers.load(ctx, id, 1024)
                                 val card = withContext(Dispatchers.IO) { ShareMusic.renderCard(ctx, cover, title, artist) }
                                 preview = SharePreview(card, title, artist)
                             } catch (_: Exception) {
@@ -782,11 +859,8 @@ fun PlayingScreen(
             val scale by animateFloatAsState(if (remote.playing) 1f else 0.9f, tween(300), label = "coverScale")
             BoxWithConstraints(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                 val side = minOf(maxWidth, maxHeight, 340.dp).coerceAtLeast(120.dp)
-                Cover(
-                    id, 1024,
-                    Modifier.size(side).graphicsLayer { scaleX = scale; scaleY = scale },
-                    corner = 12.dp,
-                )
+                val mod = Modifier.size(side).graphicsLayer { scaleX = scale; scaleY = scale }
+                if (id < 0 && artUrl != null) NetCover(artUrl, mod, corner = 28.dp) else Cover(id, 1024, mod, corner = 28.dp)
             }
 
             val md = item.mediaMetadata
@@ -914,7 +988,7 @@ private fun SectionLabel(text: String) {
 @Composable
 private fun ChoiceCard(title: String, sub: String, content: @Composable () -> Unit) {
     Column(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(6.dp)).background(Cub.Card).padding(horizontal = 16.dp, vertical = 14.dp),
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(Cub.Card).padding(horizontal = 16.dp, vertical = 14.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Column {
@@ -928,7 +1002,7 @@ private fun ChoiceCard(title: String, sub: String, content: @Composable () -> Un
 @Composable
 private fun ActionCard(title: String, sub: String, button: String, onClick: () -> Unit) {
     Row(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(6.dp)).background(Cub.Card)
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(Cub.Card)
             .padding(horizontal = 16.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),

@@ -26,18 +26,18 @@ class CaveService : Service() {
         private const val CH = "downloads"
         private const val ACTION_CANCEL = "cancel"
 
-        private fun launch(ctx: Context, url: String?, auto: Boolean) {
-            val i = Intent(ctx, CaveService::class.java).putExtra("auto", auto)
+        private fun launch(ctx: Context, url: String?, auto: Boolean, refetch: Boolean = false) {
+            val i = Intent(ctx, CaveService::class.java).putExtra("auto", auto).putExtra("refetch", refetch)
             if (url != null) i.putExtra("url", url)
             ContextCompat.startForegroundService(ctx, i)
         }
 
         /** Clone / sync a playlist link. Returns false when another download is already running. */
-        fun start(ctx: Context, url: String, auto: Boolean): Boolean {
+        fun start(ctx: Context, url: String, auto: Boolean, refetch: Boolean = false): Boolean {
             val go = synchronized(CaveQueue) {
                 if (CaveState.running) false else { CaveState.running = true; true }
             }
-            if (go) launch(ctx, url, auto)
+            if (go) launch(ctx, url, auto, refetch)
             return go
         }
 
@@ -80,13 +80,14 @@ class CaveService : Service() {
         }
         val url = intent.getStringExtra("url")
         val auto = intent.getBooleanExtra("auto", false)
+        val refetch = intent.getBooleanExtra("refetch", false)
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(NotificationChannel(CH, "Downloads", NotificationManager.IMPORTANCE_LOW))
         ServiceCompat.startForeground(this, 1, notification("Starting..."), ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
         val progress = { text: String -> nm.notify(1, notification(text)) }
         scope.launch {
             try {
-                if (url != null) CaveJob.run(applicationContext, url, auto, progress)
+                if (url != null) CaveJob.run(applicationContext, url, auto, refetch, progress)
                 while (true) {
                     val items = CaveQueue.take()
                     if (items.isEmpty()) {

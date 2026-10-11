@@ -28,7 +28,7 @@ import java.util.concurrent.atomic.AtomicInteger
 /** One cloned playlist we remember, so Sync only fetches new songs. [auto] = keep it updated in the background. */
 data class Recent(val url: String, val name: String, val keys: List<String>, val auto: Boolean = false)
 data class Item(val key: String, val target: String, val label: String)
-data class Resolved(val name: String, val items: List<Item>)
+data class Resolved(val name: String, val items: List<Item>, val cover: String? = null)
 data class Hit(val id: String, val title: String, val by: String, val seconds: Int)
 data class MyPl(val url: String, val title: String)
 data class MyPlaylists(val items: List<MyPl>, val error: String?)
@@ -58,6 +58,7 @@ object CaveState {
     var ytName by mutableStateOf("")
     var promptShown by mutableStateOf(false)
     var recents by mutableStateOf<List<Recent>>(emptyList())
+    var streams by mutableStateOf<List<StreamList>>(emptyList())
     val log = mutableStateListOf<String>()
 
     private val main = Handler(Looper.getMainLooper())
@@ -289,8 +290,24 @@ object CaveEngine {
         if (!msg.startsWith("Update failed")) prefs.edit().putLong("cave_update_at", System.currentTimeMillis()).apply()
     }
 
-    /** Search YouTube for songs (no download). */
+    private val searchCache = object : LinkedHashMap<String, List<Hit>>(16, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, List<Hit>>?) = size > 30
+    }
+
+    /**
+     * Search YouTube for songs (no download). Asks YouTube's search address directly, which answers in a fraction of a
+     * second; starting yt-dlp (Python) for it takes several seconds, so that is only the fallback.
+     */
     fun search(ctx: Context, q: String): List<Hit> {
+        val key = q.trim().lowercase()
+        synchronized(searchCache) { searchCache[key]?.let { return it } }
+        val fast = try { webSearch(q) } catch (_: Exception) { emptyList() }
+        val hits = fast.ifEmpty { slowSearch(ctx, q) }
+        if (hits.isNotEmpty()) synchronized(searchCache) { searchCache[key] = hits }
+        return hits
+    }
+
+    private fun slowSearch(ctx: Context, q: String): List<Hit> {
         init(ctx)
         val req = YoutubeDLRequest("ytsearch15:$q")
         req.addOption("--flat-playlist")
@@ -300,6 +317,51 @@ object CaveEngine {
             .filter { it.size >= 4 && it[0].length in 8..15 }
             .map { Hit(it[0], it[1], it[2], it[3].toDoubleOrNull()?.toInt() ?: 0) }
     }
+
+    private fun webSearch(q: String): List<Hit> {
+        val c = URL("https://www.youtube.com/youtubei/v1/search?prettyPrint=false").openConnection() as HttpURLConnection
+        c.requestMethod = "POST"
+        c.connectTimeout = 6000
+        c.readTimeout = 8000
+        c.doOutput = true
+        c.setRequestProperty("User-Agent", YtAuth.UA)
+        c.setRequestProperty("Content-Type", "application/json")
+        c.setRequestProperty("Accept-Language", "en-US,en;q=0.9")
+        c.setRequestProperty("X-YouTube-Client-Name", "1")
+        c.setRequestProperty("X-YouTube-Client-Version", "2.20260101.00.00")
+        val body = JSONObject()
+            .put("context", JSONObject().put("client", JSONObject()
+                .put("clientName", "WEB").put("clientVersion", "2.20260101.00.00").put("hl", "en").put("gl", "US")))
+            .put("query", q)
+            .put("params", "EgIQAQ==") // videos only
+        c.outputStream.use { it.write(body.toString().toByteArray()) }
+        if (c.responseCode !in 200..299) error("search answered ${c.responseCode}")
+        val root = JSONObject(c.inputStream.bufferedReader().use { it.readText() })
+        val out = ArrayList<Hit>()
+        fun walk(n: Any?) {
+            if (out.size >= 15) return
+            when (n) {
+                is JSONObject -> {
+                    val v = n.optJSONObject("videoRenderer")
+                    if (v != null) {
+                        val id = v.optString("videoId")
+                        val title = v.optJSONObject("title")?.optJSONArray("runs")?.optJSONObject(0)?.optString("text").orEmpty()
+                        val by = v.optJSONObject("ownerText")?.optJSONArray("runs")?.optJSONObject(0)?.optString("text").orEmpty()
+                        val len = v.optJSONObject("lengthText")?.optString("simpleText").orEmpty()
+                        // no length = a live stream: not a song
+                        if (id.length == 11 && title.isNotEmpty() && len.isNotEmpty()) out += Hit(id, title, by, parseClock(len))
+                    }
+                    for (k in n.keys()) walk(n.get(k))
+                }
+                is JSONArray -> for (i in 0 until n.length()) walk(n.get(i))
+            }
+        }
+        walk(root)
+        return out
+    }
+
+    private fun parseClock(t: String): Int =
+        t.split(":").mapNotNull { it.trim().toIntOrNull() }.fold(0) { acc, x -> acc * 60 + x }
 
     /** The signed-in user's music playlists: Liked music first, then every playlist in their YouTube Music library. */
     fun myPlaylists(ctx: Context): MyPlaylists {
@@ -414,7 +476,20 @@ private fun listJson(ctx: Context, url: String, withAuth: Boolean): Resolved? {
     }
     if (items.isEmpty()) return null
     val name = root.optString("title").trim().takeIf { it.isNotEmpty() && it != "NA" } ?: "Singles"
-    return Resolved(name, items)
+    // the playlist's own picture: the biggest of the thumbnails YouTube lists for it (album art for album playlists)
+    val thumbs = root.optJSONArray("thumbnails")
+    var cover: String? = null
+    var best = -1L
+    if (thumbs != null) {
+        for (i in 0 until thumbs.length()) {
+            val t = thumbs.optJSONObject(i) ?: continue
+            val u = t.optString("url")
+            if (!u.startsWith("http")) continue
+            val area = t.optLong("width", 0L) * t.optLong("height", 0L)
+            if (area >= best) { best = area; cover = u }
+        }
+    }
+    return Resolved(name, items, cover)
 }
 
 private fun listText(ctx: Context, url: String, withAuth: Boolean): Resolved? {
@@ -583,6 +658,51 @@ object JsRuntime {
  */
 private data class Plan(val auth: Boolean, val js: Boolean, val art: Boolean, val format: String?, val clients: String?)
 
+private const val CLIENTS = "default,tv,web_safari,android_vr"
+
+private fun plansFor(hasJs: Boolean, signed: Boolean, art: Boolean, preferred: String): List<Plan> = listOf(
+    when {
+        hasJs && signed -> Plan(true, true, art, preferred, null)
+        hasJs -> Plan(false, true, art, preferred, CLIENTS)
+        else -> Plan(false, false, art, preferred, "android_vr")
+    },
+    if (hasJs && signed) Plan(false, true, false, preferred, CLIENTS) else Plan(false, false, false, preferred, "android_vr"),
+)
+
+/** Finds the direct audio address of a video, for streaming. Blocking; uses the same two routes as downloading. */
+fun resolveStream(ctx: Context, id: String): StreamUrl {
+    CaveEngine.init(ctx)
+    val js = JsRuntime.path(ctx)
+    var last: Exception? = null
+    for (p in plansFor(js != null, YtAuth.signedIn(ctx), false, "bestaudio[ext=m4a]/bestaudio/best")) {
+        try {
+            val r = YoutubeDLRequest("https://www.youtube.com/watch?v=$id")
+            if (p.auth) r.auth(ctx)
+            if (p.js && js != null) {
+                r.addOption("--js-runtimes", "quickjs:$js")
+                r.addOption("--remote-components", "ejs:github")
+            }
+            r.addOption("--no-playlist")
+            r.addOption("-f", p.format ?: "bestaudio/best")
+            if (p.clients != null) r.addOption("--extractor-args", "youtube:player_client=${p.clients}")
+            r.addOption("--dump-json")
+            val out = YoutubeDL.getInstance().execute(r, "stream-$id-${System.nanoTime()}").out
+            val at = out.indexOf('{')
+            if (at < 0) error("no answer")
+            val o = JSONObject(out.substring(at))
+            val url = o.optString("url")
+            if (!url.startsWith("http")) error("no stream address")
+            val h = o.optJSONObject("http_headers")
+            val headers = HashMap<String, String>()
+            if (h != null) for (k in h.keys()) headers[k] = h.optString(k)
+            return StreamUrl(url, headers)
+        } catch (e: Exception) {
+            last = e
+        }
+    }
+    throw last ?: IllegalStateException("no stream address")
+}
+
 private fun downloadTrack(ctx: Context, target: String, art: Boolean, m4a: Boolean, proc: String): File {
     val dir = File(ctx.cacheDir, "cave-dl/${System.nanoTime()}").apply { mkdirs() }
     val preferred = if (m4a) "bestaudio[ext=m4a]/bestaudio/best" else "bestaudio/best"
@@ -618,18 +738,8 @@ private fun downloadTrack(ctx: Context, target: String, art: Boolean, m4a: Boole
         YoutubeDL.getInstance().execute(r, proc)
     }
 
-    val plans = buildList {
-        if (js != null && signed) {
-            if (art) add(Plan(true, true, true, preferred, null))
-            add(Plan(true, true, false, preferred, null))
-        }
-        if (js != null) add(Plan(false, true, false, preferred, "default,tv,web_safari,android_vr"))
-        if (art) add(Plan(false, false, true, preferred, "android_vr"))
-        add(Plan(false, false, false, preferred, "android_vr"))
-        add(Plan(false, false, false, "ba/b", "default,android_vr"))
-        if (signed) add(Plan(true, false, false, preferred, null))
-        add(Plan(false, false, false, null, null))
-    }
+    // two tries only: the best route we have, then one different route without cover art (the usual thing that breaks)
+    val plans = plansFor(js != null, signed, art, preferred)
 
     var last: Exception? = null
     for ((i, p) in plans.withIndex()) {
@@ -703,19 +813,33 @@ object CaveJob {
         CaveState.ui { CaveState.finished += 1 }
     }
 
-    /** Playlist covers are the first video's thumbnail, like on YouTube. Only for YouTube playlists without a cover yet. */
-    private fun fetchCover(ctx: Context, res: Resolved, folder: String) {
-        val first = res.items.firstOrNull()?.key ?: return
-        if (!first.startsWith("yt:") || PlaylistCovers.has(ctx, folder)) return
-        try {
-            val bytes = httpBytes("https://i.ytimg.com/vi/${first.removePrefix("yt:")}/hqdefault.jpg")
-            BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.let { PlaylistCovers.saveBitmap(ctx, folder, it) }
-        } catch (_: Exception) {
+    /**
+     * Playlist cover from YouTube: the playlist's own picture when YouTube gives one, otherwise the first video's
+     * thumbnail (which is what YouTube shows as the cover too). Only when the playlist has no cover yet.
+     */
+    fun fetchCover(ctx: Context, res: Resolved, key: String) {
+        if (PlaylistCovers.has(ctx, key)) return
+        val first = res.items.firstOrNull()?.key?.takeIf { it.startsWith("yt:") }?.removePrefix("yt:")
+        val urls = listOfNotNull(
+            res.cover,
+            first?.let { "https://i.ytimg.com/vi/$it/maxresdefault.jpg" },
+            first?.let { "https://i.ytimg.com/vi/$it/hqdefault.jpg" },
+        )
+        for (u in urls) {
+            try {
+                val bytes = httpBytes(u)
+                val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: continue
+                if (bmp.width < 120) continue
+                PlaylistCovers.saveBitmap(ctx, key, bmp)
+                return
+            } catch (_: Exception) {
+                // next candidate
+            }
         }
     }
 
     /** Blocking. Clones a playlist (or syncs a known one) into Music/HoneyBeat/<playlist name>. */
-    fun run(ctx: Context, rawUrl: String, auto: Boolean, onProgress: (String) -> Unit) {
+    fun run(ctx: Context, rawUrl: String, auto: Boolean, refetch: Boolean, onProgress: (String) -> Unit) {
         val url = normalizeLink(rawUrl)
         reset()
         val prefs = ctx.getSharedPreferences("honeybeat", Context.MODE_PRIVATE)
@@ -727,7 +851,7 @@ object CaveJob {
             val res = resolve(ctx, url)
             val folder = safeName(res.name)
             fetchCover(ctx, res, folder)
-            download(ctx, res, url, folder, auto, onProgress)
+            download(ctx, res, url, folder, auto, refetch, onProgress)
         } catch (e: Exception) {
             if (!cancelled) fail(e)
         } finally {
@@ -740,7 +864,7 @@ object CaveJob {
         reset()
         try {
             CaveEngine.init(ctx)
-            download(ctx, Resolved("Songs", items), null, "", false, onProgress)
+            download(ctx, Resolved("Songs", items), null, "", false, false, onProgress)
         } catch (e: Exception) {
             if (!cancelled) fail(e)
         } finally {
@@ -748,7 +872,7 @@ object CaveJob {
         }
     }
 
-    private fun download(ctx: Context, res: Resolved, recentUrl: String?, folder: String, auto: Boolean, onProgress: (String) -> Unit) {
+    private fun download(ctx: Context, res: Resolved, recentUrl: String?, folder: String, auto: Boolean, refetch: Boolean, onProgress: (String) -> Unit) {
         val prefs = ctx.getSharedPreferences("honeybeat", Context.MODE_PRIVATE)
         val art = prefs.getBoolean("cave_art", true)
         val par = prefs.getInt("cave_par", 4) // 0 = all
@@ -757,9 +881,30 @@ object CaveJob {
         val prev = recentUrl?.let { u -> CaveStore.load(prefs).firstOrNull { it.url == u } }
         val keys = (prev?.keys ?: emptyList()).toMutableList()
         val autoFlag = prev?.auto ?: auto
+        // Refetch: ignore what the app remembers and compare with the songs that are really in the folder. Songs that are
+        // missing are downloaded again, and so are songs that are damaged ("Unknown artist", no cover): the new file
+        // replaces the old one. Songs that are fine are left alone, so nothing is downloaded twice.
+        fun norm(t: String) = t.lowercase().filter { it.isLetterOrDigit() }
+        val repairs = HashMap<String, Long>() // item key -> id of the damaged song it replaces
+        if (refetch) {
+            keys.clear()
+            CaveState.ui { CaveState.status = "Checking the songs in this playlist..." }
+            val local = if (folder.isNotEmpty()) loadSongs(ctx).filter { it.folder == folder } else emptyList()
+            val byName = HashMap<String, Song>()
+            local.forEach { song ->
+                byName[norm(song.title)] = song
+                byName[norm(File(song.path).nameWithoutExtension)] = song
+            }
+            for (item in res.items) {
+                val song = byName[norm(item.label)] ?: continue
+                val damaged = song.artist == "Unknown artist" || (art && !Covers.hasEmbedded(ctx, song.id))
+                if (damaged) repairs[item.key] = song.id else keys += item.key
+            }
+            if (repairs.isNotEmpty()) CaveState.addLog("${repairs.size} damaged song(s) to fix (no artist or no cover)")
+        }
         val known = keys.toSet()
         val todo = res.items.filter { it.key !in known }
-        CaveState.addLog("${res.name}: ${res.items.size} songs, ${todo.size} new")
+        CaveState.addLog("${res.name}: ${res.items.size} songs, ${todo.size} " + (if (refetch) "to download or fix" else "new"))
 
         fun saveRecent() {
             if (recentUrl == null) return
@@ -814,6 +959,15 @@ object CaveJob {
                 refresh(item.label)
                 try {
                     val file = downloadTrack(ctx, item.target, art, m4a, proc)
+                    val old = repairs[item.key]
+                    if (old != null) {
+                        // the new file is ready; now the damaged one goes (if Android lets us)
+                        val gone = try { ctx.contentResolver.delete(songUri(old), null, null); true } catch (_: Exception) { false }
+                        if (!gone) {
+                            file.parentFile?.deleteRecursively()
+                            error("Android won't let HoneyBeat replace this file. Delete the song and refetch.")
+                        }
+                    }
                     saveToMusic(ctx, file, folder)
                     file.parentFile?.deleteRecursively()
                     synchronized(lock) {
@@ -821,7 +975,7 @@ object CaveJob {
                         saveRecent()
                     }
                     okC.incrementAndGet()
-                    CaveState.addLog("ok: ${item.label}")
+                    CaveState.addLog((if (repairs.containsKey(item.key)) "fixed: " else "ok: ") + item.label)
                 } catch (e: Exception) {
                     if (!cancelled) {
                         failC.incrementAndGet()

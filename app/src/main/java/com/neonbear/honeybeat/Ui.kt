@@ -80,16 +80,19 @@ import androidx.compose.ui.geometry.Size as GSize
 
 object Cub {
     val Black = Color(0xFF000000)
-    val Panel = Color(0xFF232323)
-    val Card = Color(0xFF1B1B1B)
-    val Hover = Color(0xFF2A2A2A)
+    val Panel = Color(0xFF16161A)
+    /** Glass surfaces: a little white over the tinted background, like the player screen. */
+    val Card = Color(0x17FFFFFF)
+    val Hover = Color(0x24FFFFFF)
+    /** Solid surface for popups. */
+    val Sheet = Color(0xFF212127)
     /** The app's blue. [Accent] is this, or the playing song's cover colour when that option is on. */
     val AccentDefault = Color(0xFF3B82F6)
     /** Read through a CompositionLocal, so every button and highlight redraws the moment the colour changes. */
     val Accent: Color @Composable get() = LocalAccent.current
     val Text = Color(0xFFF2F2F2)
     val Muted = Color(0xFF8C8C8C)
-    val Button = Color(0xFF3A3A3A)
+    val Button = Color(0x33FFFFFF)
     val Dot = Color(0xFF5A5A5A)
 }
 
@@ -212,19 +215,19 @@ fun Glyph(g: G, color: Color, box: Dp = 24.dp) {
 
 @Composable
 fun CubSwitch(on: Boolean) {
-    val x by animateDpAsState(if (on) 24.dp else 0.dp, tween(140), label = "knob")
-    val c by animateColorAsState(if (on) Cub.Accent else Cub.Muted, tween(140), label = "knobColor")
+    val x by animateDpAsState(if (on) 20.dp else 0.dp, tween(160), label = "knob")
+    val c by animateColorAsState(if (on) Cub.Accent else Cub.Muted, tween(160), label = "knobColor")
     Box(
-        Modifier.size(46.dp, 24.dp).border(1.dp, c).padding(3.dp),
+        Modifier.size(46.dp, 26.dp).clip(RoundedCornerShape(50)).background(c.copy(alpha = 0.28f)).padding(3.dp),
     ) {
-        Box(Modifier.offset(x = x).size(16.dp).background(c))
+        Box(Modifier.offset(x = x).size(20.dp).clip(RoundedCornerShape(50)).background(c))
     }
 }
 
 @Composable
 fun ToggleCard(title: String, sub: String, on: Boolean, onChange: (Boolean) -> Unit) {
     Row(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(6.dp)).background(Cub.Card)
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(Cub.Card)
             .clickable { onChange(!on) }.padding(horizontal = 16.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -240,17 +243,17 @@ fun ToggleCard(title: String, sub: String, on: Boolean, onChange: (Boolean) -> U
 @Composable
 fun CubButton(text: String, primary: Boolean = false, onClick: () -> Unit) {
     Box(
-        Modifier.bounceClick(onClick = onClick).clip(RoundedCornerShape(4.dp))
+        Modifier.bounceClick(onClick = onClick).clip(RoundedCornerShape(50))
             .background(if (primary) Cub.Accent else Cub.Button)
-            .padding(horizontal = 18.dp, vertical = 11.dp),
+            .padding(horizontal = 20.dp, vertical = 11.dp),
         contentAlignment = Alignment.Center,
     ) { Text(text, color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold) }
 }
 
 @Composable
 fun PageTitle(title: String, sub: String) {
-    Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 12.dp)) {
-        Text(title, color = Cub.Text, fontSize = 30.sp, fontFamily = Display, fontWeight = FontWeight.Medium)
+    Column(Modifier.padding(start = 20.dp, end = 20.dp, top = 10.dp, bottom = 14.dp)) {
+        Text(title, color = Cub.Text, fontSize = 34.sp, fontFamily = Display, fontWeight = FontWeight.Medium)
         Text(sub, color = Cub.Muted, fontSize = 13.sp, modifier = Modifier.padding(top = 2.dp))
     }
 }
@@ -269,7 +272,7 @@ fun Modifier.bounceClick(scale: Float = 0.94f, onClick: () -> Unit): Modifier = 
 
 /** Album cover (embedded picture) with a bear placeholder. Size comes from the modifier. */
 @Composable
-fun Cover(id: Long, px: Int, modifier: Modifier = Modifier, corner: Dp = 4.dp) {
+fun Cover(id: Long, px: Int, modifier: Modifier = Modifier, corner: Dp = 12.dp) {
     val ctx = LocalContext.current
     val show = LocalShowArt.current
     val bmp by produceState<Bitmap?>(if (show) Covers.peek(id, px) else null, id, px, show) {
@@ -305,7 +308,7 @@ fun EqBars(active: Boolean, color: Color = Cub.Accent) {
 @Composable
 fun TBtn(g: G, box: Dp, glyph: Dp, bg: Color, tint: Color, onClick: () -> Unit) {
     Box(
-        Modifier.bounceClick(onClick = onClick).size(box).clip(RoundedCornerShape(4.dp)).background(bg),
+        Modifier.bounceClick(onClick = onClick).size(box).clip(RoundedCornerShape(50)).background(bg),
         contentAlignment = Alignment.Center,
     ) { Glyph(g, tint, glyph) }
 }
@@ -313,7 +316,7 @@ fun TBtn(g: G, box: Dp, glyph: Dp, bg: Color, tint: Color, onClick: () -> Unit) 
 @Composable
 fun PlayPauseBtn(playing: Boolean, box: Dp, glyph: Dp, onClick: () -> Unit) {
     Box(
-        Modifier.bounceClick(onClick = onClick).size(box).clip(RoundedCornerShape(4.dp)).background(Cub.Accent),
+        Modifier.bounceClick(onClick = onClick).size(box).clip(RoundedCornerShape(50)).background(Cub.Accent),
         contentAlignment = Alignment.Center,
     ) {
         Crossfade(playing, animationSpec = tween(120), label = "pp") { p ->
@@ -324,7 +327,7 @@ fun PlayPauseBtn(playing: Boolean, box: Dp, glyph: Dp, onClick: () -> Unit) {
 
 /** Playlist cover: the one the user picked, or the first song's cover. */
 @Composable
-fun FolderCover(key: String, fallbackSongId: Long, modifier: Modifier = Modifier, px: Int = 160) {
+fun FolderCover(key: String, fallbackSongId: Long, modifier: Modifier = Modifier, px: Int = 160, fallbackUrl: String? = null) {
     val ctx = LocalContext.current
     val ver = PlaylistCovers.version
     val custom by produceState<Bitmap?>(null, key, ver) {
@@ -332,9 +335,11 @@ fun FolderCover(key: String, fallbackSongId: Long, modifier: Modifier = Modifier
     }
     val c = custom
     if (c != null) {
-        Box(modifier.clip(RoundedCornerShape(4.dp)).background(Cub.Black)) {
+        Box(modifier.clip(RoundedCornerShape(14.dp)).background(Cub.Black)) {
             Image(c.asImageBitmap(), null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
         }
+    } else if (fallbackUrl != null) {
+        NetCover(fallbackUrl, modifier)
     } else {
         Cover(fallbackSongId, px, modifier)
     }
@@ -342,9 +347,9 @@ fun FolderCover(key: String, fallbackSongId: Long, modifier: Modifier = Modifier
 
 /** Thumbnail from the web (used for search results). */
 @Composable
-fun NetCover(url: String, modifier: Modifier = Modifier) {
+fun NetCover(url: String, modifier: Modifier = Modifier, corner: Dp = 12.dp) {
     val bmp by produceState<Bitmap?>(NetImages.peek(url), url) { value = NetImages.load(url) }
-    Box(modifier.clip(RoundedCornerShape(4.dp)).background(Cub.Black), contentAlignment = Alignment.Center) {
+    Box(modifier.clip(RoundedCornerShape(corner)).background(Cub.Black), contentAlignment = Alignment.Center) {
         Crossfade(bmp, animationSpec = tween(180), label = "net") { b ->
             if (b != null) {
                 Image(b.asImageBitmap(), null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
@@ -405,7 +410,7 @@ fun Ico(kind: IconKind, color: Color, box: Dp = 22.dp) {
 @Composable
 fun IconBtn(kind: IconKind, box: Dp = 44.dp, bg: Color = Cub.Button, tint: Color = Color.White, onClick: () -> Unit) {
     Box(
-        Modifier.bounceClick(onClick = onClick).size(box).clip(RoundedCornerShape(4.dp)).background(bg),
+        Modifier.bounceClick(onClick = onClick).size(box).clip(RoundedCornerShape(50)).background(bg),
         contentAlignment = Alignment.Center,
     ) { Ico(kind, tint, box * 0.5f) }
 }
@@ -430,7 +435,7 @@ fun AnimatedPopup(onDismiss: () -> Unit, content: @Composable (close: () -> Unit
             exit = fadeOut(tween(140)) + scaleOut(tween(160), targetScale = 0.9f),
         ) {
             Column(
-                Modifier.padding(24.dp).fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(Cub.Card).padding(18.dp),
+                Modifier.padding(24.dp).fillMaxWidth().clip(RoundedCornerShape(28.dp)).background(Cub.Sheet).padding(22.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) { content(close) }
         }
@@ -450,7 +455,7 @@ fun Visualizer(active: Boolean, color: Color, bars: Int = 28) {
             val a = (sin(phase * 2 * PI + i * 0.55) + 0.5 * sin(phase * 4 * PI + i * 1.3)) / 1.5
             val v = ((0.25f + 0.75f * (a.toFloat() * 0.5f + 0.5f)) * level).coerceIn(0f, 1f)
             val bh = (size.height * v).coerceAtLeast(3.dp.toPx())
-            drawRect(color.copy(alpha = 0.35f + 0.65f * v), Offset(i * (bw + gap), size.height - bh), GSize(bw, bh))
+            drawRoundRect(color.copy(alpha = 0.35f + 0.65f * v), Offset(i * (bw + gap), size.height - bh), GSize(bw, bh), androidx.compose.ui.geometry.CornerRadius(bw / 2f))
         }
     }
 }

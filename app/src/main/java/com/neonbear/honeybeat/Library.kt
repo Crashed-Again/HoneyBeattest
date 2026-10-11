@@ -33,27 +33,32 @@ data class Song(
     val track: Int = 0,
     /** When the file was added to the phone, in seconds since 1970. */
     val added: Long = 0L,
+    /** YouTube video id when this song is streamed instead of stored on the phone. */
+    val stream: String? = null,
 ) {
     val uri: Uri get() = songUri(id)
 }
 
 /** A playlist: one folder inside Music/HoneyBeat. The key "" is the built-in All music list. */
-data class Folder(val key: String, val name: String, val songs: List<Song>)
+data class Folder(val key: String, val name: String, val songs: List<Song>, val stream: Boolean = false)
 
 fun songUri(id: Long): Uri =
     ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, id)
 
-fun Song.toItem(): MediaItem = MediaItem.Builder()
-    .setMediaId(id.toString())
-    .setUri(uri)
-    .setMediaMetadata(
-        MediaMetadata.Builder()
-            .setTitle(title)
-            .setArtist(artist)
-            .setAlbumTitle(album)
-            .build()
-    )
-    .build()
+fun streamThumb(id: String) = "https://i.ytimg.com/vi/$id/hqdefault.jpg"
+
+/** A stable negative number for a streamed song, so it never clashes with a MediaStore id. */
+fun streamSongId(videoId: String): Long = -(videoId.hashCode().toLong() and 0x7fffffffL) - 1L
+
+fun Song.toItem(): MediaItem {
+    val md = MediaMetadata.Builder().setTitle(title).setArtist(artist).setAlbumTitle(album)
+    if (stream != null) md.setArtworkUri(Uri.parse(streamThumb(stream)))
+    return MediaItem.Builder()
+        .setMediaId(id.toString())
+        .setUri(if (stream != null) Uri.parse("https://www.youtube.com/watch?v=$stream") else uri)
+        .setMediaMetadata(md.build())
+        .build()
+}
 
 /** Where songs live. Music/Cave is the old name of the folder; it is still read so earlier downloads keep showing up. */
 private const val HOME = "/Music/HoneyBeat/"
@@ -160,11 +165,18 @@ fun groupOf(s: Song, mode: SortMode): String? = when (mode) {
     SortMode.Album -> s.album.ifEmpty { "No album" }
 }
 
-/** All music first, then one playlist per folder in Music/HoneyBeat. */
-fun buildFolders(songs: List<Song>): List<Folder> {
+/** All music first, then one playlist per folder in Music/HoneyBeat, then the streaming playlists. */
+fun buildFolders(songs: List<Song>, streams: List<StreamList> = emptyList()): List<Folder> {
     val byFolder = songs.filter { it.folder.isNotEmpty() }.groupBy { it.folder }
     val sorted = byFolder.keys.sortedWith(String.CASE_INSENSITIVE_ORDER)
-    return listOf(Folder("", "All music", songs)) + sorted.map { Folder(it, it, byFolder.getValue(it)) }
+    val streamed = streams.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.name }).map { l ->
+        Folder(
+            l.key, l.name,
+            l.tracks.map { t -> Song(streamSongId(t.id), t.title, "Streaming", "", 0L, "", "", stream = t.id) },
+            stream = true,
+        )
+    }
+    return listOf(Folder("", "All music", songs)) + sorted.map { Folder(it, it, byFolder.getValue(it)) } + streamed
 }
 
 /** Cover art: the full-size embedded picture first (sharp), MediaStore's thumbnail as a fallback. */
@@ -188,6 +200,19 @@ object Covers {
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size, BitmapFactory.Options().apply { inSampleSize = s })
         } catch (_: Exception) {
             null
+        } finally {
+            try { r.release() } catch (_: Exception) {}
+        }
+    }
+
+    /** True when the file has a cover picture inside it. A file that cannot be read counts as having none. */
+    fun hasEmbedded(ctx: Context, id: Long): Boolean {
+        val r = MediaMetadataRetriever()
+        return try {
+            r.setDataSource(ctx, songUri(id))
+            r.embeddedPicture != null
+        } catch (_: Exception) {
+            false
         } finally {
             try { r.release() } catch (_: Exception) {}
         }
@@ -282,4 +307,25 @@ object NetImages {
         if (b != null) cache.put(url, b) else failed.add(url)
         return b
     }
+}
+
+/**
+ * Deletes songs from the phone. Returns the ones Android refused (files another install made, or any file on Android 11+
+ * without asking the person), plus on Android 10 the system question that allows the first of them.
+ */
+fun deleteSongs(ctx: Context, songs: List<Song>): Pair<List<Uri>, android.content.IntentSender?> {
+    val failed = ArrayList<Uri>()
+    var ask: android.content.IntentSender? = null
+    for (s in songs) {
+        val u = songUri(s.id)
+        try {
+            ctx.contentResolver.delete(u, null, null)
+        } catch (e: SecurityException) {
+            failed += u
+            if (ask == null && e is android.app.RecoverableSecurityException) ask = e.userAction.actionIntent.intentSender
+        } catch (_: Exception) {
+            failed += u
+        }
+    }
+    return failed to ask
 }
